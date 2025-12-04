@@ -1,0 +1,2 @@
+"""Idea Generator Agent package."""
+
