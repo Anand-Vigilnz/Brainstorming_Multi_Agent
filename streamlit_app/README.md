@@ -23,7 +23,7 @@ HOST_AGENT_URL=http://localhost:9999
 streamlit run streamlit_app/app.py
 ```
 
-The application will open in your default web browser, typically at `http://localhost:8502`.
+The application will open in your default web browser, typically at `http://localhost:8501`.
 
 ## Usage
 

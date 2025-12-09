@@ -1,6 +1,6 @@
 # Critic Agent
 
-The Critic Agent uses Google ADK to evaluate and critique ideas for feasibility, potential issues, and strengths.
+The Critic Agent uses LangChain Groq to evaluate and critique ideas for feasibility, potential issues, and strengths.
 
 ## Responsibilities
 
@@ -15,8 +15,8 @@ Copy `example.env` to `.env` and configure:
 
 ```bash
 CRITIC_AGENT_PORT=9992
-GOOGLE_API_KEY=your_api_key_here
-GOOGLE_ADK_MODEL=gemini-1.5-pro
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.1-8b-instant
 ```
 
 ## Running

@@ -1,248 +1,265 @@
-"""A2A client connections to remote agents."""
-import os
-import uuid
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List
+import asyncio
+import json
+from uuid import uuid4
 import httpx
+# Note: A2AClient is deprecated but still functional.
+# When ClientFactory becomes available in the SDK, migrate to: ClientFactory.connect(...)
+from a2a.client import A2ACardResolver, A2AClient
+from a2a.types import (
+    MessageSendParams,
+    SendMessageRequest,
+    GetTaskRequest,
+    TaskQueryParams,
+)
 from utils.logger import AgentLogger
 
 
 class RemoteAgentConnection:
-    """Manages A2A client connections to remote agents."""
-    
+    """
+    Manages connections to remote agents (Idea, Critic, Prioritizer).
+    """
     def __init__(self):
-        self.idea_agent_url: Optional[str] = None
-        self.critic_agent_url: Optional[str] = None
-        self.prioritizer_agent_url: Optional[str] = None
-        
-        # Cached agent cards
-        self.idea_agent_card: Optional[Dict[str, Any]] = None
-        self.critic_agent_card: Optional[Dict[str, Any]] = None
-        self.prioritizer_agent_card: Optional[Dict[str, Any]] = None
-        
-        self.logger = AgentLogger("host_agent")
-        self.initialize_connections()
-        
-    def initialize_connections(self):
-        """Initialize connections to remote agents from environment variables."""
-        self.idea_agent_url = os.getenv("IDEA_AGENT_URL", "http://localhost:8001")
-        self.critic_agent_url = os.getenv("CRITIC_AGENT_URL", "http://localhost:8002")
-        self.prioritizer_agent_url = os.getenv("PRIORITIZER_AGENT_URL", "http://localhost:8003")
-        self.logger.log_activity("Initialized remote agent connections", {
-            "idea_agent_url": self.idea_agent_url,
-            "critic_agent_url": self.critic_agent_url,
-            "prioritizer_agent_url": self.prioritizer_agent_url
-        })
-    
-    async def discover_agent_card(self, agent_url: str, agent_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Discover an agent card from the agent's well-known endpoint.
-        
-        Args:
-            agent_url: Base URL of the agent
-            agent_name: Name of the agent for logging
-            
-        Returns:
-            Agent card dictionary or None if discovery fails
-        """
-        discovery_url = f"{agent_url}/.well-known/agent-card.json"
-        
-        try:
-            self.logger.log_activity(f"Discovering agent card for {agent_name}", {
-                "agent_url": agent_url,
-                "discovery_url": discovery_url
-            })
-            
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(discovery_url)
-                response.raise_for_status()
-                agent_card = response.json()
-                
-                self.logger.log_activity(f"Successfully discovered agent card for {agent_name}", {
-                    "agent_name": agent_card.get("name", agent_name),
-                    "skills": [skill.get("id") for skill in agent_card.get("skills", [])]
-                })
-                
-                return agent_card
-        except Exception as e:
-            self.logger.log_error(f"Failed to discover agent card for {agent_name}", e, {
-                "agent_url": agent_url,
-                "discovery_url": discovery_url
-            })
-            # Return None - will fall back to direct URL usage
-            return None
-    
-    async def discover_all_agents(self):
-        """Discover agent cards for all remote agents."""
-        self.logger.log_activity("Starting agent card discovery for all remote agents")
-        
-        # Discover idea agent
-        self.idea_agent_card = await self.discover_agent_card(self.idea_agent_url, "idea_agent")
-        
-        # Discover critic agent
-        self.critic_agent_card = await self.discover_agent_card(self.critic_agent_url, "critic_agent")
-        
-        # Discover prioritizer agent
-        self.prioritizer_agent_card = await self.discover_agent_card(
-            self.prioritizer_agent_url, "prioritizer_agent"
-        )
-        
-        discovered_count = sum([
-            1 if self.idea_agent_card else 0,
-            1 if self.critic_agent_card else 0,
-            1 if self.prioritizer_agent_card else 0
-        ])
-        
-        self.logger.log_activity("Agent card discovery completed", {
-            "discovered_count": discovered_count,
-            "total_agents": 3
-        })
-    
-    async def send_task_to_idea_agent(self, topic: str) -> dict:
-        """Send a task to the idea generator agent via A2A protocol."""
-        # Discover agent card if not already discovered
-        if not self.idea_agent_card:
-            self.idea_agent_card = await self.discover_agent_card(self.idea_agent_url, "idea_agent")
-        
-        # Use discovered URL or fall back to configured URL
-        agent_url = self.idea_agent_card.get("url", self.idea_agent_url) if self.idea_agent_card else self.idea_agent_url
-        
-        request_id = str(uuid.uuid4())
-        request_data = {
-            "skill": "generate_ideas",
-            "input": {"topic": topic}
-        }
-        
-        self.logger.log_request("idea_agent", "generate_ideas", request_data, request_id)
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{agent_url}/task",
-                    json=request_data,
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                response_data = response.json()
-                
-                self.logger.log_response(
-                    "idea_agent",
-                    "generate_ideas",
-                    request_id,
-                    response_data,
-                    "success"
-                )
-                return response_data
-        except Exception as e:
-            self.logger.log_response(
-                "idea_agent",
-                "generate_ideas",
-                request_id,
-                {},
-                "error",
-                str(e)
-            )
-            self.logger.log_error("Failed to send task to idea agent", e, {"topic": topic})
-            raise
-    
-    async def send_task_to_critic_agent(self, idea: str) -> dict:
-        """Send a task to the critic agent via A2A protocol."""
-        # Discover agent card if not already discovered
-        if not self.critic_agent_card:
-            self.critic_agent_card = await self.discover_agent_card(self.critic_agent_url, "critic_agent")
-        
-        # Use discovered URL or fall back to configured URL
-        agent_url = self.critic_agent_card.get("url", self.critic_agent_url) if self.critic_agent_card else self.critic_agent_url
-        
-        request_id = str(uuid.uuid4())
-        request_data = {
-            "skill": "critique_idea",
-            "input": {"idea": idea}
-        }
-        
-        self.logger.log_request("critic_agent", "critique_idea", request_data, request_id)
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{agent_url}/task",
-                    json=request_data,
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                response_data = response.json()
-                
-                self.logger.log_response(
-                    "critic_agent",
-                    "critique_idea",
-                    request_id,
-                    response_data,
-                    "success"
-                )
-                return response_data
-        except Exception as e:
-            self.logger.log_response(
-                "critic_agent",
-                "critique_idea",
-                request_id,
-                {},
-                "error",
-                str(e)
-            )
-            self.logger.log_error("Failed to send task to critic agent", e, {"idea": idea[:100]})
-            raise
-    
-    async def send_task_to_prioritizer_agent(self, ideas_with_critiques: list) -> dict:
-        """Send a task to the prioritizer agent via A2A protocol."""
-        # Discover agent card if not already discovered
-        if not self.prioritizer_agent_card:
-            self.prioritizer_agent_card = await self.discover_agent_card(
-                self.prioritizer_agent_url, "prioritizer_agent"
-            )
-        
-        # Use discovered URL or fall back to configured URL
-        agent_url = (
-            self.prioritizer_agent_card.get("url", self.prioritizer_agent_url)
-            if self.prioritizer_agent_card
-            else self.prioritizer_agent_url
-        )
-        
-        request_id = str(uuid.uuid4())
-        request_data = {
-            "skill": "prioritize_ideas",
-            "input": {"ideas_with_critiques": ideas_with_critiques}
-        }
-        
-        self.logger.log_request("prioritizer_agent", "prioritize_ideas", request_data, request_id)
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{agent_url}/task",
-                    json=request_data,
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                response_data = response.json()
-                
-                self.logger.log_response(
-                    "prioritizer_agent",
-                    "prioritize_ideas",
-                    request_id,
-                    response_data,
-                    "success"
-                )
-                return response_data
-        except Exception as e:
-            self.logger.log_response(
-                "prioritizer_agent",
-                "prioritize_ideas",
-                request_id,
-                {},
-                "error",
-                str(e)
-            )
-            self.logger.log_error("Failed to send task to prioritizer agent", e, {
-                "ideas_count": len(ideas_with_critiques)
-            })
-            raise
+        self.logger = AgentLogger("host_agent_connection")
+        self.idea_client = None
+        self.critic_client = None
+        self.prioritizer_client = None
+        self.idea_card = None
+        self.critic_card = None
+        self.prioritizer_card = None
+        self._httpx_client = None
 
+    async def _get_httpx_client(self):
+        if self._httpx_client is None:
+            self._httpx_client = httpx.AsyncClient(timeout=120.0)
+        return self._httpx_client
+
+    async def _connect_to_agent(self, base_url: str):
+        """Connect to agent and return (client, card) tuple."""
+        httpx_client = await self._get_httpx_client()
+        resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
+        card = await resolver.get_agent_card()
+        client = A2AClient(httpx_client=httpx_client, agent_card=card)
+        return client, card
+
+    async def discover_all_agents(self):
+        """
+        Connects to all required remote agents.
+        This is a lazy initialization step.
+        """
+        self.logger.log_activity("Attempting to connect to remote agents...")
+        
+        # Connect to Idea Agent
+        try:
+            self.idea_client, self.idea_card = await self._connect_to_agent("http://localhost:9991")
+            self.logger.log_activity("Connected to Idea Agent at http://localhost:9991")
+        except Exception as e:
+            self.logger.log_error("Failed to connect to Idea Agent", e)
+            
+        # Connect to Critic Agent
+        try:
+            self.critic_client, self.critic_card = await self._connect_to_agent("http://localhost:9992")
+            self.logger.log_activity("Connected to Critic Agent at http://localhost:9992")
+        except Exception as e:
+            self.logger.log_error("Failed to connect to Critic Agent", e)
+            
+        # Connect to Prioritizer Agent
+        try:
+            self.prioritizer_client, self.prioritizer_card = await self._connect_to_agent("http://localhost:9993")
+            self.logger.log_activity("Connected to Prioritizer Agent at http://localhost:9993")
+        except Exception as e:
+            self.logger.log_error("Failed to connect to Prioritizer Agent", e)
+
+    def _create_message_payload(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create the proper message payload for A2A protocol."""
+        return {
+            'message': {
+                'role': 'user',
+                'parts': [
+                    {'kind': 'text', 'text': json.dumps(input_data)}
+                ],
+                'messageId': uuid4().hex,
+            },
+        }
+
+    async def _send_and_collect_response(self, client: A2AClient, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Send a message and collect the final response (Polling)."""
+        payload = self._create_message_payload(input_data)
+        request = SendMessageRequest(
+            id=str(uuid4()),
+            params=MessageSendParams(**payload)
+        )
+        
+        self.logger.log_activity(f"Sending request with payload: {input_data}")
+        
+        try:
+            # 1. Send Task
+            response = await client.send_message(request)
+            
+            # Access Task from RootModel - handle SendMessageSuccessResponse
+            response_data = response.root if hasattr(response, 'root') else response
+            
+            # Extract task from response
+            if hasattr(response_data, 'result'):
+                task = response_data.result
+            elif hasattr(response_data, 'id') and hasattr(response_data, 'status'):
+                # It's already a Task object
+                task = response_data
+            else:
+                task = response_data
+            
+            if not task:
+                return {"error": "Empty response from agent"}
+                
+            task_id = task.id if hasattr(task, 'id') else None
+            if not task_id and hasattr(task, 'root') and hasattr(task.root, 'id'): 
+                 task_id = task.root.id
+
+            if not task_id:
+                return {"error": "Could not extract task ID from response"}
+
+            self.logger.log_activity(f"Task submitted with ID: {task_id}. Checking status...")
+
+            # Check if task is already completed
+            final_task = None
+            if hasattr(task, 'status') and task.status:
+                state = task.status.state if hasattr(task.status, 'state') else None
+                if state == 'completed':
+                    final_task = task
+                    self.logger.log_activity("Task already completed, using initial response")
+                elif state == 'failed':
+                    return {"error": f"Task failed: {getattr(task.status, 'message', 'Unknown error')}"}
+
+            # 2. Poll for completion if not already completed
+            if not final_task:
+                import time
+                end_time = time.time() + 60
+                
+                while time.time() < end_time:
+                    await asyncio.sleep(1)  # Reduced to 1 second for faster response
+                    
+                    # Retrieve latest task state
+                    try:
+                        get_req = GetTaskRequest(
+                            id=str(uuid4()),
+                            params=TaskQueryParams(id=task_id)
+                        )
+                        task_response = await client.get_task(get_req)
+                    except Exception as e:
+                        self.logger.log_error("Error getting task status", e)
+                        # Continue polling instead of raising
+                        continue
+                        
+                    # Handle GetTaskSuccessResponse wrapper
+                    task_response_data = task_response.root if hasattr(task_response, 'root') else task_response
+                    
+                    # Extract task from response
+                    if hasattr(task_response_data, 'result'):
+                        current_task = task_response_data.result
+                    elif hasattr(task_response_data, 'id') and hasattr(task_response_data, 'status'):
+                        current_task = task_response_data
+                    else:
+                        current_task = task_response_data
+                    
+                    if hasattr(current_task, 'status') and current_task.status:
+                         state = current_task.status.state if hasattr(current_task.status, 'state') else None
+                         if state == 'completed':
+                             final_task = current_task
+                             self.logger.log_activity("Task completed during polling")
+                             break
+                         elif state == 'failed':
+                             return {"error": f"Task failed: {getattr(current_task.status, 'message', 'Unknown error')}"}
+                
+                if not final_task:
+                    return {"error": "Task timed out waiting for completion"}
+
+            # 3. Parse Artifacts from final task
+            final_result = {}
+            # Check for errors in final task status again just in case
+            if hasattr(final_task, 'status') and hasattr(final_task.status, 'state') and final_task.status.state == 'failed':
+                 return {"error": f"Task failed: {getattr(final_task.status, 'message', 'Unknown error')}"}
+
+            self.logger.log_activity(f"Final task has artifacts: {hasattr(final_task, 'artifacts')}")
+            if hasattr(final_task, 'artifacts'):
+                self.logger.log_activity(f"Artifacts count: {len(final_task.artifacts) if final_task.artifacts else 0}")
+
+            if hasattr(final_task, 'artifacts') and final_task.artifacts:
+                self.logger.log_activity(f"Found {len(final_task.artifacts)} artifacts in task.")
+                for idx, artifact in enumerate(final_task.artifacts):
+                    artifact_name = getattr(artifact, 'name', f'artifact_{idx}')
+                    self.logger.log_activity(f"Processing artifact {idx}: {artifact_name}")
+                    
+                    if hasattr(artifact, 'parts') and artifact.parts:
+                        self.logger.log_activity(f"Artifact has {len(artifact.parts)} parts")
+                        for part_idx, part in enumerate(artifact.parts):
+                            # Handle RootModel wrapper if present
+                            actual_part = part.root if hasattr(part, 'root') else part
+                            
+                            part_kind = getattr(actual_part, 'kind', 'unknown')
+                            self.logger.log_activity(f"Part {part_idx} kind: {part_kind}")
+                            
+                            if hasattr(actual_part, 'kind') and actual_part.kind == 'text' and hasattr(actual_part, 'text'):
+                                text_content = actual_part.text
+                                self.logger.log_activity(f"Part {part_idx} text content (first 300 chars): {text_content[:300]}...")
+                                try:
+                                    parsed = json.loads(text_content)
+                                    if isinstance(parsed, dict):
+                                        # Merge results if multiple artifacts
+                                        if final_result:
+                                            final_result.update(parsed)
+                                        else:
+                                            final_result = parsed
+                                        self.logger.log_activity(f"Successfully parsed result from artifact {idx}, part {part_idx}")
+                                        self.logger.log_activity(f"Parsed keys: {list(parsed.keys())}")
+                                    else:
+                                        self.logger.log_activity(f"Parsed content is not a dict: {type(parsed)}")
+                                except json.JSONDecodeError as e:
+                                    self.logger.log_activity(f"JSON decode error on artifact {idx}, part {part_idx}: {e}")
+                                    self.logger.log_activity(f"Raw text: {text_content[:500]}")
+                            else:
+                                self.logger.log_activity(f"Part {part_idx} is not text or missing content (kind: {part_kind})")
+                    else:
+                        self.logger.log_activity(f"Artifact {idx} has no parts")
+            else:
+                 self.logger.log_activity("No artifacts found in final task.")
+                 # Log task structure for debugging
+                 self.logger.log_activity(f"Task attributes: {[attr for attr in dir(final_task) if not attr.startswith('_')]}")
+
+            if final_result:
+                self.logger.log_activity(f"Returning final result with keys: {list(final_result.keys())}")
+                return final_result
+                
+            self.logger.log_error("No result artifacts collected", ValueError("No artifacts"), {
+                "task_id": task_id,
+                "has_artifacts": hasattr(final_task, 'artifacts'),
+                "artifacts_count": len(final_task.artifacts) if hasattr(final_task, 'artifacts') and final_task.artifacts else 0
+            })
+            return {"error": "No result artifacts collected"}
+            
+        except Exception as e:
+            self.logger.log_error("Error during request", e)
+            return {"error": str(e)}
+
+    async def send_task_to_idea_agent(self, topic: str) -> Dict[str, Any]:
+        if not self.idea_client:
+            await self.discover_all_agents()
+        if not self.idea_client:
+             raise RuntimeError("Idea Agent is not available")
+        
+        return await self._send_and_collect_response(self.idea_client, {"topic": topic})
+
+    async def send_task_to_critic_agent(self, idea: str) -> Dict[str, Any]:
+        if not self.critic_client:
+            await self.discover_all_agents()
+        if not self.critic_client:
+             raise RuntimeError("Critic Agent is not available")
+        
+        return await self._send_and_collect_response(self.critic_client, {"idea": idea})
+
+    async def send_task_to_prioritizer_agent(self, ideas_with_critiques: List[Dict[str, str]]) -> Dict[str, Any]:
+        if not self.prioritizer_client:
+            await self.discover_all_agents()
+        if not self.prioritizer_client:
+             raise RuntimeError("Prioritizer Agent is not available")
+        
+        return await self._send_and_collect_response(self.prioritizer_client, {"ideas_with_critiques": ideas_with_critiques})

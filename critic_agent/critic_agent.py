@@ -1,72 +1,55 @@
-"""Critic Agent using Google Generative AI to evaluate and critique ideas."""
-import os
 from typing import Dict, Any
-import google.generativeai as genai
+import os
+import asyncio
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class CriticAgent:
-    """Agent that critiques ideas for feasibility, potential issues, and strengths."""
-    
     def __init__(self):
-        """Initialize the critic agent with Google Generative AI."""
-        # Configure Google Generative AI
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if api_key:
-            genai.configure(api_key=api_key)
-        
-        # Initialize the model
-        model_name = os.getenv("GOOGLE_ADK_MODEL", "gemini-2.0-flash")
-        try:
-            self.model = genai.GenerativeModel(model_name)
-        except Exception:
-            # Fallback to default model
-            self.model = genai.GenerativeModel("gemini-pro")
-    
-    def _critique_idea_impl(self, idea: str) -> Dict[str, Any]:
-        """
-        Internal implementation of idea critique.
-        
-        Args:
-            idea: The idea to critique
-            
-        Returns:
-            Dictionary containing critique analysis
-        """
-        prompt = f"""Critique the following idea: {idea}
+        self.api_key = os.getenv("GROQ_API_KEY")
+        if not self.api_key:
+            print("Warning: GROQ_API_KEY not found")
+        # Use llama-3.1-8b-instant for thoughtful critiques
+        self.llm = ChatGroq(
+            groq_api_key=self.api_key,
+            model_name="llama-3.1-8b-instant",
+            temperature=0.5
+        )
 
-Provide a comprehensive critique that includes:
-1. Strengths: What are the positive aspects of this idea?
-2. Potential Issues: What challenges or problems might arise?
-3. Feasibility: How feasible is this idea to implement?
-4. Recommendations: Any suggestions for improvement?
-
-Format your response as a clear, structured critique."""
-
-        try:
-            # Use Google Generative AI to generate critique
-            response = self.model.generate_content(prompt)
-            response_text = response.text if hasattr(response, 'text') else str(response)
-            
-            return {
-                "critique": response_text,
-                "idea": idea
-            }
-        except Exception as e:
-            # Fallback: return error
-            return {
-                "critique": f"Error generating critique: {str(e)}",
-                "idea": idea
-            }
-    
     async def critique_idea(self, idea: str) -> Dict[str, Any]:
-        """
-        Critique an idea.
+        prompt = f"Critique the following idea constructively: '{idea}'. identifying potential challenges and improvements. Keep it concise."
         
-        Args:
-            idea: The idea to critique
-            
-        Returns:
-            Dictionary containing critique analysis
-        """
-        return self._critique_idea_impl(idea)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # LangChain Groq is synchronous, so we run it in executor
+                response = await asyncio.to_thread(self.llm.invoke, prompt)
+                # Extract text from LangChain message
+                text = response.content if hasattr(response, 'content') else str(response)
+                return {"critique": text}
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        print(f"Rate limit hit, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        return {"error": "API rate limit exceeded. Please wait a moment and try again.", "critique": "Failed to generate critique."}
+                else:
+                    return {"error": error_str, "critique": "Failed to generate critique."}
+        
+        return {"error": "Failed after retries", "critique": "Failed to generate critique."}
 
+    async def handle_task(self, task_input: Dict[str, Any]) -> Dict[str, Any]:
+        idea = task_input.get("idea")
+        if not idea:
+             idea = task_input.get("input", {}).get("idea")
+             
+        if not idea:
+            return {"error": "No idea provided"}
+            
+        return await self.critique_idea(idea)

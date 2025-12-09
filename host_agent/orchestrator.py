@@ -12,10 +12,14 @@ class Orchestrator:
     def __init__(self):
         self.remote_connection = RemoteAgentConnection()
         self.logger = AgentLogger("host_agent")
+        self._agents_connected = False
     
-    async def initialize(self):
-        """Initialize orchestrator by discovering all agent cards."""
-        await self.remote_connection.discover_all_agents()
+    async def _ensure_connected(self):
+        """Ensure agents are connected (lazy initialization)."""
+        if not self._agents_connected:
+            self.logger.log_activity("Connecting to remote agents (lazy initialization)")
+            await self.remote_connection.discover_all_agents()
+            self._agents_connected = True
     
     async def process_brainstorming_request(self, topic: str) -> Dict[str, Any]:
         """
@@ -38,6 +42,9 @@ class Orchestrator:
             "topic": topic
         })
         
+        # Ensure agents are connected (lazy initialization)
+        await self._ensure_connected()
+        
         try:
             # Step 1: Generate ideas
             self.logger.log_activity("Step 1: Generating ideas", {
@@ -45,7 +52,35 @@ class Orchestrator:
                 "topic": topic
             })
             ideas_result = await self.remote_connection.send_task_to_idea_agent(topic)
-            ideas = ideas_result.get("output", {}).get("ideas", [])
+            
+            # DEBUG: Log the raw response
+            self.logger.log_activity(f"Raw ideas_result: {ideas_result}")
+            self.logger.log_activity(f"ideas_result type: {type(ideas_result)}")
+            self.logger.log_activity(f"ideas_result keys: {list(ideas_result.keys()) if isinstance(ideas_result, dict) else 'N/A'}")
+            
+            # Handle potential 'output' wrapper or direct response
+            # Some A2A implementations wrap result in 'output', others return direct dict
+            if "output" in ideas_result:
+                output_data = ideas_result["output"]
+                ideas = output_data.get("ideas", [])
+                error = output_data.get("error")
+            else:
+                ideas = ideas_result.get("ideas", [])
+                error = ideas_result.get("error")
+            
+            # Check for errors first
+            if error:
+                self.logger.log_error("Idea generation failed", ValueError(error), {
+                    "workflow_id": workflow_id,
+                    "topic": topic,
+                    "error": error
+                })
+                return {
+                    "status": "error",
+                    "message": error,
+                    "ideas": [],
+                    "workflow_id": workflow_id
+                }
             
             self.logger.log_activity("Ideas generated", {
                 "workflow_id": workflow_id,
@@ -55,12 +90,14 @@ class Orchestrator:
             if not ideas:
                 self.logger.log_error("No ideas generated", ValueError("No ideas generated"), {
                     "workflow_id": workflow_id,
-                    "topic": topic
+                    "topic": topic,
+                    "raw_response": str(ideas_result)
                 })
                 return {
                     "status": "error",
                     "message": "No ideas generated",
-                    "ideas": []
+                    "ideas": [],
+                    "workflow_id": workflow_id
                 }
             
             # Step 2: Critique each idea
@@ -76,7 +113,25 @@ class Orchestrator:
                     "idea_preview": idea[:50] + "..." if len(idea) > 50 else idea
                 })
                 critique_result = await self.remote_connection.send_task_to_critic_agent(idea)
-                critique = critique_result.get("output", {}).get("critique", "")
+                
+                # Check for errors in critique response
+                if "output" in critique_result:
+                    output_data = critique_result["output"]
+                    critique = output_data.get("critique", "")
+                    error = output_data.get("error")
+                else:
+                    critique = critique_result.get("critique", "")
+                    error = critique_result.get("error")
+                
+                if error:
+                    self.logger.log_error(f"Critique failed for idea {idx}", ValueError(error), {
+                        "workflow_id": workflow_id,
+                        "idea_index": idx,
+                        "error": error
+                    })
+                    # Use error as critique or skip this idea
+                    critique = f"Error: {error}"
+
                 ideas_with_critiques.append({
                     "idea": idea,
                     "critique": critique
@@ -95,7 +150,27 @@ class Orchestrator:
             prioritization_result = await self.remote_connection.send_task_to_prioritizer_agent(
                 ideas_with_critiques
             )
-            prioritized_ideas = prioritization_result.get("output", {}).get("prioritized_ideas", [])
+            
+            # Check for errors in prioritization response
+            if "output" in prioritization_result:
+                output_data = prioritization_result["output"]
+                prioritized_ideas = output_data.get("prioritized_ideas", [])
+                error = output_data.get("error")
+            else:
+                prioritized_ideas = prioritization_result.get("prioritized_ideas", [])
+                error = prioritization_result.get("error")
+            
+            if error:
+                self.logger.log_error("Prioritization failed", ValueError(error), {
+                    "workflow_id": workflow_id,
+                    "error": error
+                })
+                return {
+                    "status": "error",
+                    "message": f"Prioritization failed: {error}",
+                    "ideas": [],
+                    "workflow_id": workflow_id
+                }
             
             self.logger.log_activity("Workflow completed successfully", {
                 "workflow_id": workflow_id,
@@ -134,6 +209,10 @@ class Orchestrator:
             Task result with prioritized ideas
         """
         topic = task_input.get("topic", "")
+        # Fallback if wrapped in input
+        if not topic:
+             topic = task_input.get("input", {}).get("topic", "")
+
         if not topic:
             return {
                 "status": "error",

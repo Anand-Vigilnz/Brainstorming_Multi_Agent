@@ -5,71 +5,102 @@ from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import Task, TaskStatusUpdateEvent, TaskStatus, TaskArtifactUpdateEvent, Artifact, TextPart
-from prioritizer_agent.prioritizer_agent import PrioritizerAgent
+from host_agent.orchestrator import Orchestrator
 from utils.logger import AgentLogger
 from datetime import datetime, timezone
 
 
-class PrioritizerAgentExecutor(AgentExecutor):
-    """Wraps the Google ADK agent with A2A server capabilities."""
+class HostAgentExecutor(AgentExecutor):
+    """Wraps the Orchestrator with A2A server capabilities."""
     
-    def __init__(self, agent: PrioritizerAgent):
-        self.agent = agent
-        self.logger = AgentLogger("prioritizer_agent")
+    def __init__(self, orchestrator: Orchestrator):
+        # AgentExecutor doesn't need super().__init__() arguments apparently
+        self.orchestrator = orchestrator
+        self.logger = AgentLogger("host_agent")
     
     def _extract_input_from_message(self, message) -> Dict[str, Any]:
         """Extract task input from message, handling various formats."""
         task_input = {}
         
+        print(f"[HostAgent._extract] Starting extraction...")
+        
         # Try 1: Check metadata for input
         if hasattr(message, 'metadata') and message.metadata and "input" in message.metadata:
             task_input = message.metadata["input"]
+            print(f"[HostAgent._extract] Found in metadata['input']: {task_input}")
         # Try 2: Check for direct 'input' attribute
         elif hasattr(message, 'input') and message.input:
             task_input = message.input
+            print(f"[HostAgent._extract] Found in message.input: {task_input}")
         # Try 3: Parse JSON from message parts (A2A standard format)
         elif hasattr(message, 'parts') and message.parts:
-            for part in message.parts:
+            print(f"[HostAgent._extract] Found {len(message.parts)} parts")
+            for i, part in enumerate(message.parts):
+                print(f"[HostAgent._extract]   Part {i}: {type(part)}")
+                
                 # Part is a RootModel, access part.root to get the actual TextPart/FilePart/DataPart
                 actual_part = part.root if hasattr(part, 'root') else part
+                print(f"[HostAgent._extract]   Actual part {i}: {type(actual_part)}")
                 
+                if hasattr(actual_part, 'kind'):
+                    print(f"[HostAgent._extract]   Part {i} kind: {actual_part.kind}")
+                if hasattr(actual_part, 'text'):
+                    print(f"[HostAgent._extract]   Part {i} text: {actual_part.text[:200] if hasattr(actual_part.text, '__len__') and len(actual_part.text) > 200 else actual_part.text}")
+                    
                 if hasattr(actual_part, 'kind') and actual_part.kind == 'text' and hasattr(actual_part, 'text'):
                     try:
                         parsed = json.loads(actual_part.text)
                         if isinstance(parsed, dict):
                             task_input = parsed
+                            print(f"[HostAgent._extract] Successfully parsed JSON from part {i}: {task_input}")
                             break
-                    except json.JSONDecodeError:
-                        pass
+                    except json.JSONDecodeError as e:
+                        print(f"[HostAgent._extract] JSON decode error on part {i}: {e}")
+                        # Not JSON, maybe raw text - use as topic
+                        task_input = {"topic": actual_part.text}
+                        print(f"[HostAgent._extract] Using raw text as topic from part {i}")
+                        break
+        else:
+            print(f"[HostAgent._extract] No metadata, input, or parts found")
         
         if not isinstance(task_input, dict):
             if task_input is None:
                 task_input = {}
+                print(f"[HostAgent._extract] task_input was None, set to empty dict")
         
+        print(f"[HostAgent._extract] Final task_input: {task_input}")
         return task_input
     
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Execute the agent task."""
         message = context.message
         
+        print(f"[HostAgent] Message type: {type(message)}")
+        print(f"[HostAgent] Message attrs: {[a for a in dir(message) if not a.startswith('_')]}")
+        
         try:
             task_input = self._extract_input_from_message(message)
+            print(f"[HostAgent] Extracted task_input: {task_input}")
+            self.logger.log_activity(f"Extracted task_input: {task_input}")
             
-            ideas_with_critiques = task_input.get("ideas_with_critiques", []) if isinstance(task_input, dict) else []
+            topic = task_input.get("topic", "") if isinstance(task_input, dict) else ""
+            print(f"[HostAgent] Extracted topic: '{topic}'")
+            self.logger.log_activity(f"Extracted topic: '{topic}'")
             
-            if not ideas_with_critiques:
-                self.logger.log_error("Ideas with critiques are required", ValueError("No input"))
+            if not topic:
+                print(f"[HostAgent] ERROR: No topic found!")
+                self.logger.log_error("Topic is required", ValueError("No topic"))
                 return
-            
-            # Prioritize ideas using the agent
-            result = await self.agent.prioritize_ideas(ideas_with_critiques)
+
+            # Process brainstorming request using orchestrator
+            result = await self.orchestrator.process_brainstorming_request(topic)
             
             # Send the result as an artifact
             result_json = json.dumps(result) if isinstance(result, dict) else str(result)
             
             artifact = Artifact(
                 artifact_id=uuid4().hex,
-                name="prioritization_result",
+                name="brainstorming_result",
                 parts=[TextPart(text=result_json)]
             )
             
@@ -95,7 +126,7 @@ class PrioritizerAgentExecutor(AgentExecutor):
             )
             
             await event_queue.enqueue_event(status_event)
-            self.logger.log_activity("Ideas prioritized", result)
+            self.logger.log_activity("Execution completed", result)
             
         except Exception as e:
             self.logger.log_error("Error in execute", e)

@@ -1,6 +1,6 @@
 # Idea Generator Agent
 
-The Idea Generator Agent uses Google ADK to generate creative and innovative ideas based on a given topic.
+The Idea Generator Agent uses LangChain Groq to generate creative and innovative ideas based on a given topic.
 
 ## Responsibilities
 
@@ -14,8 +14,8 @@ Copy `example.env` to `.env` and configure:
 
 ```bash
 IDEA_AGENT_PORT=9991
-GOOGLE_API_KEY=your_api_key_here
-GOOGLE_ADK_MODEL=gemini-1.5-pro
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.1-8b-instant
 ```
 
 ## Running

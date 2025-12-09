@@ -64,7 +64,8 @@ class AgentLogger:
         to_agent: str,
         skill: str,
         request_data: Dict[str, Any],
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        url: Optional[str] = None
     ):
         """
         Log an outgoing request to another agent.
@@ -74,6 +75,7 @@ class AgentLogger:
             skill: Skill being requested
             request_data: Request payload
             request_id: Optional unique request ID for tracking
+            url: Optional URL being called
         """
         if not request_id:
             request_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{self.agent_name}_{to_agent}"
@@ -85,13 +87,15 @@ class AgentLogger:
             "from_agent": self.agent_name,
             "to_agent": to_agent,
             "skill": skill,
+            "url": url,
             "request_data": request_data,
             "status": "sent"
         }
         
         self._write_communication_log(log_entry)
+        url_info = f" | URL: {url}" if url else ""
         self.logger.info(
-            f"REQUEST [{request_id}] {self.agent_name} -> {to_agent} | Skill: {skill}"
+            f"REQUEST [{request_id}] {self.agent_name} -> {to_agent} | Skill: {skill}{url_info}"
         )
     
     def log_response(
@@ -101,7 +105,8 @@ class AgentLogger:
         request_id: Optional[str],
         response_data: Dict[str, Any],
         status: str = "success",
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        url: Optional[str] = None
     ):
         """
         Log an incoming response from another agent.
@@ -113,6 +118,7 @@ class AgentLogger:
             response_data: Response payload
             status: Response status (success, error)
             error: Error message if status is error
+            url: Optional URL that was called
         """
         log_entry = {
             "timestamp": datetime.now().isoformat(),
@@ -121,6 +127,7 @@ class AgentLogger:
             "from_agent": from_agent,
             "to_agent": self.agent_name,
             "skill": skill,
+            "url": url,
             "response_data": response_data,
             "status": status,
             "error": error
@@ -128,13 +135,14 @@ class AgentLogger:
         
         self._write_communication_log(log_entry)
         
+        url_info = f" | URL: {url}" if url else ""
         if status == "error":
             self.logger.error(
-                f"RESPONSE [{request_id}] {from_agent} -> {self.agent_name} | Skill: {skill} | ERROR: {error}"
+                f"RESPONSE [{request_id}] {from_agent} -> {self.agent_name} | Skill: {skill} | ERROR: {error}{url_info}"
             )
         else:
             self.logger.info(
-                f"RESPONSE [{request_id}] {from_agent} -> {self.agent_name} | Skill: {skill} | Status: {status}"
+                f"RESPONSE [{request_id}] {from_agent} -> {self.agent_name} | Skill: {skill} | Status: {status}{url_info}"
             )
     
     def log_incoming_request(

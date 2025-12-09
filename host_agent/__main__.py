@@ -1,118 +1,123 @@
-"""Entry point for the Host Agent (Orchestrator)."""
-import os
-import json
-import uuid
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from uvicorn import run
+from a2a.types import AgentCard
+from a2a.server.request_handlers.default_request_handler import DefaultRequestHandler
+from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.events import InMemoryQueueManager
+from typing import Dict, Any
+import asyncio
+from uuid import uuid4
+
 from host_agent.orchestrator import Orchestrator
-from utils.logger import AgentLogger
+from host_agent.agent_executor import HostAgentExecutor
 
+# Setup Agent Card
+card = AgentCard(
+    name="BrainstormingHost",
+    description="Orchestrates the brainstorming session",
+    instructions="Send me a topic and I will generate, critique, and prioritize ideas.",
+    url="http://localhost:9999",
+    version="0.0.1",
+    capabilities={},
+    skills=[],
+    defaultInputModes={"text"},
+    defaultOutputModes={"text"}
+)
 
-# Load environment variables
-load_dotenv()
-
-app = FastAPI(title="Brainstorming Orchestrator")
-
-# Get configuration from environment
-port = int(os.getenv("HOST_AGENT_PORT", "8000"))
-agent_name = os.getenv("HOST_AGENT_NAME", "Brainstorming Orchestrator")
-
-# Initialize logger
-logger = AgentLogger("host_agent")
-
-# Create agent card
-agent_card = {
-    "name": agent_name,
-    "description": "Orchestrates brainstorming workflow across multiple agents",
-    "url": f"http://localhost:{port}",
-    "skills": [
-        {
-            "id": "brainstorm",
-            "name": "Brainstorm Ideas",
-            "description": "Generates, critiques, and prioritizes ideas for a given topic"
-        }
-    ]
-}
-
+# Initialize Logic
 orchestrator = Orchestrator()
+executor = HostAgentExecutor(orchestrator)
 
-logger.log_activity("Host agent started", {"port": port, "agent_name": agent_name})
+# Setup stores
+task_store = InMemoryTaskStore()
+queue_manager = InMemoryQueueManager()
+
+# REST API task storage (in-memory dict for UI communication)
+rest_task_storage: Dict[str, Dict[str, Any]] = {}
+
+# Setup A2A Handler - pass DefaultRequestHandler directly to A2AFastAPIApplication
+# (A2AFastAPIApplication wraps it with JSONRPCHandler internally)
+request_handler = DefaultRequestHandler(
+    agent_executor=executor,
+    task_store=task_store,
+    queue_manager=queue_manager
+)
+
+# Setup FastAPI App - pass RequestHandler, NOT JSONRPCHandler
+a2a_app = A2AFastAPIApplication(card, request_handler)
+app = FastAPI()
+a2a_app.add_routes_to_app(app)
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize orchestrator on startup (discover agent cards)."""
-    logger.log_activity("Starting agent card discovery on startup")
-    await orchestrator.initialize()
-
-
-@app.get("/.well-known/agent-card.json")
-async def get_agent_card():
-    """Return the agent card for A2A protocol discovery."""
-    logger.log_activity("Agent card requested")
-    return JSONResponse(content=agent_card)
-
-
-@app.post("/task")
-async def handle_task(request: Request):
-    """Handle incoming A2A task requests."""
-    request_id = str(uuid.uuid4())
+# REST API endpoints for UI communication
+@app.post("/api/brainstorm")
+async def create_brainstorm_task(request: Dict[str, Any]):
+    """Create a new brainstorming task and return task_id."""
+    topic = request.get("topic", "").strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="Topic is required")
     
-    try:
-        # Parse JSON body
-        body = await request.json()
-        skill = body.get("skill", "")
-        task_input = body.get("input", {})
-        
-        # Log incoming request
-        logger.log_incoming_request(
-            "streamlit_ui",
-            skill,
-            {"skill": skill, "input": task_input},
-            request_id
-        )
-        
-        if skill != "brainstorm":
-            error_msg = f"Unknown skill: {skill}"
-            logger.log_error(error_msg, ValueError(error_msg), {"skill": skill})
-            raise HTTPException(status_code=400, detail=error_msg)
-        
-        result = await orchestrator.handle_task(task_input)
-        
-        # Return result directly (it already has status field)
-        # Log outgoing response
-        logger.log_outgoing_response(
-            "streamlit_ui",
-            skill,
-            request_id,
-            result,
-            result.get("status", "success")
-        )
-        
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        error_response = {
-            "status": "error",
-            "message": str(e)
-        }
-        logger.log_outgoing_response(
-            "streamlit_ui",
-            body.get("skill", "unknown") if 'body' in locals() else "unknown",
-            request_id,
-            error_response,
-            "error",
-            str(e)
-        )
-        logger.log_error("Error handling task", e, {"request_id": request_id})
-        return error_response
+    task_id = str(uuid4())
+    
+    # Initialize task in storage
+    rest_task_storage[task_id] = {
+        "task_id": task_id,
+        "status": "pending",
+        "topic": topic,
+        "result": None,
+        "error": None
+    }
+    
+    # Start processing asynchronously
+    asyncio.create_task(process_brainstorm_task(task_id, topic))
+    
+    return JSONResponse({
+        "task_id": task_id,
+        "status": "pending"
+    })
 
+
+@app.get("/api/brainstorm/{task_id}")
+async def get_brainstorm_task(task_id: str):
+    """Get the status and result of a brainstorming task."""
+    if task_id not in rest_task_storage:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    task_data = rest_task_storage[task_id]
+    response = {
+        "task_id": task_data["task_id"],
+        "status": task_data["status"]
+    }
+    
+    if task_data["status"] == "completed":
+        response["result"] = task_data["result"]
+    elif task_data["status"] == "failed":
+        response["error"] = task_data.get("error", "Unknown error")
+    
+    return JSONResponse(response)
+
+
+async def process_brainstorm_task(task_id: str, topic: str):
+    """Process the brainstorming task using the orchestrator."""
+    try:
+        # Update status to running
+        rest_task_storage[task_id]["status"] = "running"
+        
+        # Process using orchestrator
+        result = await orchestrator.process_brainstorming_request(topic)
+        
+        # Store result
+        rest_task_storage[task_id]["status"] = "completed"
+        rest_task_storage[task_id]["result"] = result
+        
+    except Exception as e:
+        # Store error
+        rest_task_storage[task_id]["status"] = "failed"
+        rest_task_storage[task_id]["error"] = str(e)
 
 if __name__ == "__main__":
-    print(f"Host Agent (Orchestrator) starting on port {port}...")
-    print(f"Agent Card available at: http://localhost:{port}/.well-known/agent-card.json")
-    run(app, host="0.0.0.0", port=port)
-
+    print("[HOST AGENT] Starting on port 9999...")
+    uvicorn.run(app, host="0.0.0.0", port=9999)

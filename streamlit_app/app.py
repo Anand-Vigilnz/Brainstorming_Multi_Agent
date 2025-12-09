@@ -1,8 +1,12 @@
 """Streamlit UI for the Multi-Agent Brainstorming System."""
 import streamlit as st
-import httpx
 import os
+import asyncio
+import json
+import html
 from typing import Dict, Any
+
+import httpx
 
 
 # Page configuration
@@ -13,36 +17,231 @@ st.set_page_config(
 )
 
 # Configuration
-HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "http://localhost:9999")
+# HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "http://localhost:9999")
+# HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "http://localhost:9999")
+HOST_AGENT_URL = "https://devagentguard.vigilnz.com/agent"
 
 
 def send_brainstorming_request(topic: str) -> Dict[str, Any]:
     """
-    Send a brainstorming request to the host agent.
-    
-    Args:
-        topic: The brainstorming topic
-        
-    Returns:
-        Response from the host agent
+    Send a brainstorming request to the host agent using REST API.
     """
+    async def _send_request():
+        try:
+            async with httpx.AsyncClient(timeout=300) as http_client:
+                # Step 1: Create task by sending POST request
+                create_response = await http_client.post(
+                    f"{HOST_AGENT_URL}/api/brainstorm",
+                    json={"topic": topic},
+                    headers={"Content-Type": "application/json"}
+                )
+                create_response.raise_for_status()
+                create_data = create_response.json()
+                task_id = create_data.get("task_id")
+                
+                if not task_id:
+                    return {"status": "error", "message": "No task_id received from host agent"}
+                
+                # Step 2: Poll for task completion
+                max_polls = 120  # Poll for up to 2 minutes (120 * 1 second)
+                poll_interval = 1  # Poll every 1 second
+                
+                for poll_count in range(max_polls):
+                    await asyncio.sleep(poll_interval)
+                    
+                    # Get task status
+                    status_response = await http_client.get(
+                        f"{HOST_AGENT_URL}/api/brainstorm/{task_id}"
+                    )
+                    status_response.raise_for_status()
+                    status_data = status_response.json()
+                    
+                    task_status = status_data.get("status")
+                    
+                    if task_status == "completed":
+                        # Task completed, extract result
+                        result = status_data.get("result", {})
+                        
+                        # Format result to match expected display format
+                        # Wrap result in artifacts format for display_results compatibility
+                        return {
+                            "status": "success",
+                            "artifacts": [{
+                                "name": "brainstorming_result",
+                                "parsed_content": result
+                            }]
+                        }
+                    elif task_status == "failed":
+                        error = status_data.get("error", "Unknown error")
+                        return {"status": "error", "message": error}
+                    # If status is "pending" or "running", continue polling
+                
+                # Timeout
+                return {"status": "error", "message": "Task timed out - polling exceeded maximum time"}
+
+        except httpx.HTTPStatusError as e:
+            return {"status": "error", "message": f"HTTP error: {e.response.status_code} - {e.response.text}"}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": f"Error: {str(e)}"}
+    
+    # Run async function in sync context
     try:
-        with httpx.Client(timeout=300.0) as client:
-            response = client.post(
-                f"{HOST_AGENT_URL}/task",
-                json={
-                    "skill": "brainstorm",
-                    "input": {"topic": topic}
-                }
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(_send_request())
+
+
+def display_results(result: Dict[str, Any]):
+    """Display results in an attractive format."""
+    st.header("🎯 Results")
+    
+    # Check if we have artifacts with parsed content
+    if result.get("status") == "success" and "artifacts" in result:
+        artifacts = result["artifacts"]
+        
+        # Find the brainstorming result artifact
+        brainstorming_data = None
+        for artifact in artifacts:
+            if artifact.get("name") == "brainstorming_result" and "parsed_content" in artifact:
+                brainstorming_data = artifact["parsed_content"]
+                break
+        
+        if brainstorming_data:
+            # Display topic
+            if "topic" in brainstorming_data:
+                st.subheader(f"📌 Topic: {brainstorming_data['topic']}")
+            
+            # Display status
+            status = brainstorming_data.get("status", "unknown")
+            if status == "success":
+                st.success("✅ Successfully generated and prioritized ideas!")
+            else:
+                st.error(f"❌ Status: {status}")
+                message = brainstorming_data.get("message", "Unknown error")
+                st.error(f"**Error Details:** {message}")
+                # Special handling for quota errors
+                if "quota" in message.lower() or "429" in message:
+                    st.warning("💡 **Tip:** Google API quota limits have been reached. Please wait a few minutes and try again.")
+                return
+            
+            # Display statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                total_ideas = brainstorming_data.get("total_ideas", 0)
+                st.metric("Total Ideas Generated", total_ideas)
+            with col2:
+                prioritized_count = len(brainstorming_data.get("prioritized_ideas", []))
+                st.metric("Prioritized Ideas", prioritized_count)
+            with col3:
+                if "workflow_id" in brainstorming_data:
+                    st.caption(f"Workflow ID: {brainstorming_data['workflow_id'][:8]}...")
+            
+            # Download button for results
+            json_str = json.dumps(brainstorming_data, indent=2)
+            st.download_button(
+                label="📥 Download Results as JSON",
+                data=json_str,
+                file_name=f"brainstorming_results_{brainstorming_data.get('workflow_id', 'unknown')[:8]}.json",
+                mime="application/json"
             )
-            response.raise_for_status()
-            return response.json()
-    except httpx.RequestError as e:
-        return {"status": "error", "message": f"Connection error: {str(e)}"}
-    except httpx.HTTPStatusError as e:
-        return {"status": "error", "message": f"HTTP error: {str(e)}"}
-    except Exception as e:
-        return {"status": "error", "message": f"Error: {str(e)}"}
+            
+            st.divider()
+            
+            # Display prioritized ideas
+            prioritized_ideas = brainstorming_data.get("prioritized_ideas", [])
+            if prioritized_ideas:
+                st.subheader("🏆 Prioritized Ideas")
+                st.markdown("These ideas have been ranked by feasibility and impact:")
+                
+                for idx, idea_data in enumerate(prioritized_ideas, 1):
+                    with st.container():
+                        # Create a card-like container with different colors for each rank
+                        colors = [
+                            "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",  # Purple
+                            "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",  # Pink
+                            "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",  # Blue
+                        ]
+                        color = colors[(idx - 1) % len(colors)]
+                        
+                        st.markdown(f"""
+                        <div style="
+                            background: {color};
+                            padding: 1.5rem;
+                            border-radius: 10px;
+                            margin-bottom: 1rem;
+                            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                        ">
+                            <h3 style="color: white; margin: 0 0 1rem 0;">#{idx} Top Priority</h3>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Idea content - handle both dict and string types
+                        if isinstance(idea_data, dict):
+                            idea_text = idea_data.get("idea", "")
+                        elif isinstance(idea_data, str):
+                            idea_text = idea_data
+                        else:
+                            idea_text = str(idea_data)
+                        
+                        if idea_text:
+                            # Remove markdown bold markers and escape HTML
+                            clean_idea = idea_text.replace("**", "").replace("*", "")
+                            escaped_idea = html.escape(clean_idea)
+                            st.markdown(f"""
+                            <div style="
+                                background-color: #f8f9fa;
+                                padding: 1.5rem;
+                                border-radius: 8px;
+                                border-left: 4px solid #667eea;
+                                margin-bottom: 1rem;
+                            ">
+                                <h4 style="color: #333; margin-top: 0;">💡 Idea</h4>
+                                <p style="color: #555; font-size: 1.1em; line-height: 1.6;">{escaped_idea}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        # Rationale - only available if idea_data is a dict
+                        if isinstance(idea_data, dict):
+                            rationale = idea_data.get("rationale", "")
+                        else:
+                            rationale = ""
+                        if rationale:
+                            escaped_rationale = html.escape(rationale)
+                            st.markdown(f"""
+                            <div style="
+                                background-color: #e8f5e9;
+                                padding: 1.2rem;
+                                border-radius: 8px;
+                                border-left: 4px solid #4caf50;
+                                margin-bottom: 1.5rem;
+                            ">
+                                <h4 style="color: #2e7d32; margin-top: 0;">📊 Rationale</h4>
+                                <p style="color: #1b5e20; line-height: 1.6;">{escaped_rationale}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        if idx < len(prioritized_ideas):
+                            st.divider()
+            else:
+                st.warning("No prioritized ideas found in the response.")
+        else:
+            # Fallback: show raw artifacts
+            st.warning("Could not parse brainstorming results. Showing raw data:")
+            st.json(result)
+    elif result.get("status") == "error":
+        st.error("❌ Error occurred")
+        st.error(result.get("message", "Unknown error"))
+        if "artifacts" in result:
+            st.json(result)
+    else:
+        # Fallback: show raw result
+        st.warning("Unexpected result format. Showing raw data:")
+        st.json(result)
 
 
 def main():
@@ -53,7 +252,7 @@ def main():
     # Sidebar for configuration
     with st.sidebar:
         st.header("Configuration")
-        host_agent_url = st.text_input(
+        st.text_input(
             "Host Agent URL",
             value=HOST_AGENT_URL,
             help="URL of the host agent (orchestrator)"
@@ -83,177 +282,11 @@ def main():
         
         # Show progress
         with st.spinner("Processing your request..."):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Step 1: Generating ideas
-            status_text.text("Step 1/3: Generating ideas...")
-            progress_bar.progress(33)
-            
             # Send request to host agent
             result = send_brainstorming_request(topic.strip())
-            
-            # Step 2: Critiquing ideas
-            status_text.text("Step 2/3: Critiquing ideas...")
-            progress_bar.progress(66)
-            
-            # Step 3: Prioritizing ideas
-            status_text.text("Step 3/3: Prioritizing ideas...")
-            progress_bar.progress(100)
-            
-            status_text.empty()
-            progress_bar.empty()
         
         # Display results
-        # Handle both old nested format and new direct format
-        if result.get("status") == "success":
-            # Direct format (new)
-            prioritized_ideas = result.get("prioritized_ideas", [])
-            total_ideas = result.get("total_ideas", 0)
-            result_topic = result.get("topic", topic.strip())
-        elif result.get("status") == "completed" and result.get("output", {}).get("status") == "success":
-            # Nested format (old - for backward compatibility)
-            output = result.get("output", {})
-            prioritized_ideas = output.get("prioritized_ideas", [])
-            total_ideas = output.get("total_ideas", 0)
-            result_topic = output.get("topic", topic.strip())
-            result = output  # Use the nested output as the main result
-        else:
-            # Error case
-            prioritized_ideas = []
-            total_ideas = 0
-            result_topic = topic.strip()
-        
-        if result.get("status") == "success" or (result.get("status") == "completed" and result.get("output", {}).get("status") == "success"):
-            st.success("✅ Brainstorming complete!")
-            
-            # Display summary metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Ideas Generated", total_ideas)
-            with col2:
-                st.metric("Ideas Prioritized", len(prioritized_ideas))
-            with col3:
-                st.metric("Topic", result_topic[:30] + "..." if len(result_topic) > 30 else result_topic)
-            
-            if prioritized_ideas:
-                st.header("📊 Prioritized Ideas")
-                
-                # Create tabs for better organization
-                tab1, tab2 = st.tabs(["📋 Summary View", "📄 Detailed View"])
-                
-                with tab1:
-                    # Summary view with cards
-                    for idx, idea_data in enumerate(prioritized_ideas, 1):
-                        rank = idea_data.get('rank', idx)
-                        idea = idea_data.get('idea', 'N/A')
-                        critique = idea_data.get('critique', 'N/A')
-                        
-                        # Truncate long text for summary
-                        idea_short = idea[:100] + "..." if len(idea) > 100 else idea
-                        critique_short = critique[:200] + "..." if len(critique) > 200 else critique
-                        
-                        with st.container():
-                            st.subheader(f"🥇 Rank #{rank}: {idea_short}")
-                            st.markdown(f"**Full Idea:** {idea}")
-                            
-                            with st.expander("📝 View Critique", expanded=False):
-                                st.markdown(critique)
-                            
-                            st.divider()
-                
-                with tab2:
-                    # Detailed view with all information
-                    for idx, idea_data in enumerate(prioritized_ideas, 1):
-                        rank = idea_data.get('rank', idx)
-                        idea = idea_data.get('idea', 'N/A')
-                        critique = idea_data.get('critique', 'N/A')
-                        
-                        with st.expander(f"Rank #{rank}: {idea[:60]}...", expanded=(idx == 1)):
-                            st.markdown("### 💡 Idea")
-                            st.info(idea)
-                            
-                            st.markdown("### 🔍 Critique")
-                            st.markdown(critique)
-                            
-                            if 'prioritization_notes' in idea_data and idea_data['prioritization_notes']:
-                                st.markdown("### 📊 Prioritization Analysis")
-                                # Show only a portion of prioritization notes to avoid repetition
-                                notes = idea_data['prioritization_notes']
-                                # Try to extract just the relevant part for this idea
-                                if f"**Idea:** {idea}" in notes or f"*{idea}" in notes:
-                                    # Find the section for this specific idea
-                                    st.markdown(notes[:1000] + "..." if len(notes) > 1000 else notes)
-                                else:
-                                    st.caption("Full prioritization analysis available in summary")
-                            
-                            st.caption(f"Priority Rank: {rank}")
-            else:
-                st.warning("No prioritized ideas were returned.")
-        else:
-            # Show error details
-            error_message = result.get("message", "Unknown error occurred")
-            
-            # Check if it's the nested format with actual data
-            if result.get("status") == "completed" and "output" in result:
-                output = result.get("output", {})
-                if output.get("status") == "success":
-                    # Data is actually there, just in nested format
-                    st.warning("⚠️ Response format issue detected. Data found in nested format.")
-                    prioritized_ideas = output.get("prioritized_ideas", [])
-                    total_ideas = output.get("total_ideas", 0)
-                    result_topic = output.get("topic", topic.strip())
-                    
-                    # Display the data
-                    st.success("✅ Brainstorming complete!")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total Ideas Generated", total_ideas)
-                    with col2:
-                        st.metric("Ideas Prioritized", len(prioritized_ideas))
-                    with col3:
-                        st.metric("Topic", result_topic[:30] + "..." if len(result_topic) > 30 else result_topic)
-                    
-                    if prioritized_ideas:
-                        st.header("📊 Prioritized Ideas")
-                        tab1, tab2 = st.tabs(["📋 Summary View", "📄 Detailed View"])
-                        
-                        with tab1:
-                            for idx, idea_data in enumerate(prioritized_ideas, 1):
-                                rank = idea_data.get('rank', idx)
-                                idea = idea_data.get('idea', 'N/A')
-                                critique = idea_data.get('critique', 'N/A')
-                                idea_short = idea[:100] + "..." if len(idea) > 100 else idea
-                                
-                                with st.container():
-                                    st.subheader(f"🥇 Rank #{rank}: {idea_short}")
-                                    st.markdown(f"**Full Idea:** {idea}")
-                                    with st.expander("📝 View Critique", expanded=False):
-                                        st.markdown(critique)
-                                    st.divider()
-                        
-                        with tab2:
-                            for idx, idea_data in enumerate(prioritized_ideas, 1):
-                                rank = idea_data.get('rank', idx)
-                                idea = idea_data.get('idea', 'N/A')
-                                critique = idea_data.get('critique', 'N/A')
-                                
-                                with st.expander(f"Rank #{rank}: {idea[:60]}...", expanded=(idx == 1)):
-                                    st.markdown("### 💡 Idea")
-                                    st.info(idea)
-                                    st.markdown("### 🔍 Critique")
-                                    st.markdown(critique)
-                                    if 'prioritization_notes' in idea_data:
-                                        st.markdown("### 📊 Prioritization Analysis")
-                                        notes = idea_data['prioritization_notes']
-                                        st.markdown(notes[:1000] + "..." if len(notes) > 1000 else notes)
-                                    st.caption(f"Priority Rank: {rank}")
-                    return
-            
-            # Actual error case
-            st.error(f"❌ Error: {error_message}")
-            with st.expander("🔍 View Error Details", expanded=False):
-                st.json(result)
+        display_results(result)
     
     # Display example
     with st.expander("💡 Example Topics"):
@@ -268,4 +301,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
