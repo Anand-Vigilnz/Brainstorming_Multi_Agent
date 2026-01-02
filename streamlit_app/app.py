@@ -5,11 +5,12 @@ import asyncio
 import json
 import html
 from typing import Dict, Any
-# from dotenv import load_dotenv
+from pathlib import Path
+from dotenv import load_dotenv
 import httpx
 
 
-# load_dotenv()
+load_dotenv(dotenv_path="../.env")
 
 # Page configuration
 st.set_page_config(
@@ -18,22 +19,34 @@ st.set_page_config(
     layout="wide"
 )
 
-# Configuration
-# HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "http://localhost:9999")
-HOST_AGENT_URL = "https://devagentguard.vigilnz.com/agent"
+# Configuration defaults
+DEFAULT_HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "https://devagentguard.vigilnz.com/agent")
+DEFAULT_ARCHITECT_AGENT_URL = os.getenv("ARCHITECT_AGENT_URL", "http://localhost:9991")
+DEFAULT_DEVELOPER_AGENT_URL = os.getenv("DEVELOPER_AGENT_URL", "http://localhost:9992")
+DEFAULT_TESTER_AGENT_URL = os.getenv("TESTER_AGENT_URL", "http://localhost:9993")
 
 
-def send_brainstorming_request(topic: str) -> Dict[str, Any]:
+def send_development_request(user_request: str, host_agent_url: str, architect_agent_url: str = None, 
+                               developer_agent_url: str = None, tester_agent_url: str = None) -> Dict[str, Any]:
     """
-    Send a brainstorming request to the host agent using REST API.
+    Send a development request to the host agent using REST API.
     """
     async def _send_request():
         try:
             async with httpx.AsyncClient(timeout=300) as http_client:
+                # Prepare request payload with optional agent URLs
+                payload = {"user_request": user_request}
+                if architect_agent_url:
+                    payload["architect_agent_url"] = architect_agent_url
+                if developer_agent_url:
+                    payload["developer_agent_url"] = developer_agent_url
+                if tester_agent_url:
+                    payload["tester_agent_url"] = tester_agent_url
+                
                 # Step 1: Create task by sending POST request
                 create_response = await http_client.post(
-                    f"{HOST_AGENT_URL}/api/brainstorm",
-                    json={"topic": topic},
+                    f"{host_agent_url}/api/develop",
+                    json=payload,
                     headers={"Content-Type": "application/json"}
                 )
                 create_response.raise_for_status()
@@ -52,7 +65,7 @@ def send_brainstorming_request(topic: str) -> Dict[str, Any]:
                     
                     # Get task status
                     status_response = await http_client.get(
-                        f"{HOST_AGENT_URL}/api/brainstorm/{task_id}"
+                        f"{host_agent_url}/api/develop/{task_id}"
                     )
                     status_response.raise_for_status()
                     status_data = status_response.json()
@@ -68,7 +81,7 @@ def send_brainstorming_request(topic: str) -> Dict[str, Any]:
                         return {
                             "status": "success",
                             "artifacts": [{
-                                "name": "brainstorming_result",
+                                "name": "development_result",
                                 "parsed_content": result
                             }]
                         }
@@ -105,134 +118,113 @@ def display_results(result: Dict[str, Any]):
     if result.get("status") == "success" and "artifacts" in result:
         artifacts = result["artifacts"]
         
-        # Find the brainstorming result artifact
-        brainstorming_data = None
+        # Find the development result artifact
+        development_data = None
         for artifact in artifacts:
-            if artifact.get("name") == "brainstorming_result" and "parsed_content" in artifact:
-                brainstorming_data = artifact["parsed_content"]
+            if artifact.get("name") == "development_result" and "parsed_content" in artifact:
+                development_data = artifact["parsed_content"]
                 break
         
-        if brainstorming_data:
-            # Display topic
-            if "topic" in brainstorming_data:
-                st.subheader(f"📌 Topic: {brainstorming_data['topic']}")
+        if development_data:
+            # Display user request
+            if "user_request" in development_data:
+                st.subheader(f"📌 Project Request: {development_data['user_request']}")
             
             # Display status
-            status = brainstorming_data.get("status", "unknown")
+            status = development_data.get("status", "unknown")
             if status == "success":
-                st.success("✅ Successfully generated and prioritized ideas!")
+                st.success("✅ Successfully completed product development workflow!")
             else:
                 st.error(f"❌ Status: {status}")
-                message = brainstorming_data.get("message", "Unknown error")
+                message = development_data.get("message", "Unknown error")
                 st.error(f"**Error Details:** {message}")
                 # Special handling for quota errors
                 if "quota" in message.lower() or "429" in message:
-                    st.warning("💡 **Tip:** Google API quota limits have been reached. Please wait a few minutes and try again.")
+                    st.warning("💡 **Tip:** API quota limits have been reached. Please wait a few minutes and try again.")
                 return
             
-            # Display statistics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                total_ideas = brainstorming_data.get("total_ideas", 0)
-                st.metric("Total Ideas Generated", total_ideas)
-            with col2:
-                prioritized_count = len(brainstorming_data.get("prioritized_ideas", []))
-                st.metric("Prioritized Ideas", prioritized_count)
-            with col3:
-                if "workflow_id" in brainstorming_data:
-                    st.caption(f"Workflow ID: {brainstorming_data['workflow_id'][:8]}...")
+            # Display workflow ID
+            if "workflow_id" in development_data:
+                st.caption(f"Workflow ID: {development_data['workflow_id'][:8]}...")
             
             # Download button for results
-            json_str = json.dumps(brainstorming_data, indent=2)
+            json_str = json.dumps(development_data, indent=2)
             st.download_button(
                 label="📥 Download Results as JSON",
                 data=json_str,
-                file_name=f"brainstorming_results_{brainstorming_data.get('workflow_id', 'unknown')[:8]}.json",
+                file_name=f"development_results_{development_data.get('workflow_id', 'unknown')[:8]}.json",
                 mime="application/json"
             )
             
             st.divider()
             
-            # Display prioritized ideas
-            prioritized_ideas = brainstorming_data.get("prioritized_ideas", [])
-            if prioritized_ideas:
-                st.subheader("🏆 Prioritized Ideas")
-                st.markdown("These ideas have been ranked by feasibility and impact:")
-                
-                for idx, idea_data in enumerate(prioritized_ideas, 1):
-                    with st.container():
-                        # Create a card-like container with different colors for each rank
-                        colors = [
-                            "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",  # Purple
-                            "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",  # Pink
-                            "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",  # Blue
-                        ]
-                        color = colors[(idx - 1) % len(colors)]
-                        
-                        st.markdown(f"""
-                        <div style="
-                            background: {color};
-                            padding: 1.5rem;
-                            border-radius: 10px;
-                            margin-bottom: 1rem;
-                            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                        ">
-                            <h3 style="color: white; margin: 0 0 1rem 0;">#{idx} Top Priority</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Idea content - handle both dict and string types
-                        if isinstance(idea_data, dict):
-                            idea_text = idea_data.get("idea", "")
-                        elif isinstance(idea_data, str):
-                            idea_text = idea_data
-                        else:
-                            idea_text = str(idea_data)
-                        
-                        if idea_text:
-                            # Remove markdown bold markers and escape HTML
-                            clean_idea = idea_text.replace("**", "").replace("*", "")
-                            escaped_idea = html.escape(clean_idea)
-                            st.markdown(f"""
-                            <div style="
-                                background-color: #f8f9fa;
-                                padding: 1.5rem;
-                                border-radius: 8px;
-                                border-left: 4px solid #667eea;
-                                margin-bottom: 1rem;
-                            ">
-                                <h4 style="color: #333; margin-top: 0;">💡 Idea</h4>
-                                <p style="color: #555; font-size: 1.1em; line-height: 1.6;">{escaped_idea}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        # Rationale - only available if idea_data is a dict
-                        if isinstance(idea_data, dict):
-                            rationale = idea_data.get("rationale", "")
-                        else:
-                            rationale = ""
-                        if rationale:
-                            escaped_rationale = html.escape(rationale)
-                            st.markdown(f"""
-                            <div style="
-                                background-color: #e8f5e9;
-                                padding: 1.2rem;
-                                border-radius: 8px;
-                                border-left: 4px solid #4caf50;
-                                margin-bottom: 1.5rem;
-                            ">
-                                <h4 style="color: #2e7d32; margin-top: 0;">📊 Rationale</h4>
-                                <p style="color: #1b5e20; line-height: 1.6;">{escaped_rationale}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        if idx < len(prioritized_ideas):
-                            st.divider()
-            else:
-                st.warning("No prioritized ideas found in the response.")
+            # Display Architectural Plan
+            if "plan" in development_data:
+                st.subheader("🏗️ Architectural Plan")
+                plan = development_data["plan"]
+                if isinstance(plan, dict):
+                    st.json(plan)
+                else:
+                    st.text(str(plan))
+                st.divider()
+            
+            # Display Code Implementation
+            if "code" in development_data:
+                st.subheader("💻 Code Implementation")
+                code = development_data["code"]
+                if isinstance(code, dict):
+                    if "files" in code:
+                        st.markdown(f"**Summary:** {code.get('summary', 'N/A')}")
+                        st.markdown(f"**Total Files:** {len(code.get('files', []))}")
+                        for file_info in code.get("files", []):
+                            with st.expander(f"📄 {file_info.get('path', 'unknown')}"):
+                                st.markdown(f"**Description:** {file_info.get('description', 'N/A')}")
+                                st.code(file_info.get("content", ""), language="python")
+                    else:
+                        st.json(code)
+                else:
+                    st.text(str(code))
+                st.divider()
+            
+            # Display Test Results
+            if "test_results" in development_data:
+                st.subheader("🧪 Test Results")
+                test_results = development_data["test_results"]
+                if isinstance(test_results, dict):
+                    overall_status = test_results.get("overall_status", "unknown")
+                    if overall_status == "pass":
+                        st.success(f"✅ Overall Status: {overall_status.upper()}")
+                    elif overall_status == "fail":
+                        st.error(f"❌ Overall Status: {overall_status.upper()}")
+                    else:
+                        st.info(f"ℹ️ Overall Status: {overall_status.upper()}")
+                    
+                    st.markdown(f"**Test Summary:** {test_results.get('test_summary', 'N/A')}")
+                    
+                    if "test_cases" in test_results and test_results["test_cases"]:
+                        st.markdown("**Test Cases:**")
+                        for test_case in test_results["test_cases"]:
+                            test_status = test_case.get("status", "unknown")
+                            status_icon = "✅" if test_status == "pass" else "❌" if test_status == "fail" else "⚠️"
+                            st.markdown(f"{status_icon} **{test_case.get('test_name', 'Unnamed Test')}**")
+                            st.markdown(f"   *{test_case.get('description', 'No description')}*")
+                            if test_case.get("details"):
+                                st.text(test_case.get("details"))
+                    
+                    if "issues_found" in test_results and test_results["issues_found"]:
+                        st.warning("**Issues Found:**")
+                        for issue in test_results["issues_found"]:
+                            st.markdown(f"- {issue}")
+                    
+                    if "recommendations" in test_results and test_results["recommendations"]:
+                        st.info("**Recommendations:**")
+                        for rec in test_results["recommendations"]:
+                            st.markdown(f"- {rec}")
+                else:
+                    st.text(str(test_results))
         else:
             # Fallback: show raw artifacts
-            st.warning("Could not parse brainstorming results. Showing raw data:")
+            st.warning("Could not parse development results. Showing raw data:")
             st.json(result)
     elif result.get("status") == "error":
         st.error("❌ Error occurred")
@@ -247,56 +239,103 @@ def display_results(result: Dict[str, Any]):
 
 def main():
     """Main Streamlit application."""
-    st.title("💡 Multi-Agent Brainstorming System")
-    st.markdown("Generate, critique, and prioritize ideas using AI agents")
+    st.title("🚀 Multi-Agent Product Development System")
+    st.markdown("Build products through AI agents: Architect → Developer → Tester")
     
     # Sidebar for configuration
     with st.sidebar:
         st.header("Configuration")
-        st.text_input(
+        
+        # Initialize session state for URLs if not present
+        if "host_agent_url" not in st.session_state:
+            st.session_state.host_agent_url = DEFAULT_HOST_AGENT_URL
+        if "architect_agent_url" not in st.session_state:
+            st.session_state.architect_agent_url = DEFAULT_ARCHITECT_AGENT_URL
+        if "developer_agent_url" not in st.session_state:
+            st.session_state.developer_agent_url = DEFAULT_DEVELOPER_AGENT_URL
+        if "tester_agent_url" not in st.session_state:
+            st.session_state.tester_agent_url = DEFAULT_TESTER_AGENT_URL
+        
+        # Host Agent URL
+        st.session_state.host_agent_url = st.text_input(
             "Host Agent URL",
-            value=HOST_AGENT_URL,
-            help="URL of the host agent (orchestrator)"
+            value=st.session_state.host_agent_url,
+            help="URL of the host agent (Product Owner/Orchestrator)",
+            key="host_agent_url_input"
         )
+        
+        st.divider()
+        st.subheader("Remote Agent URLs")
+        
+        # Architect Agent URL
+        st.session_state.architect_agent_url = st.text_input(
+            "Architect Agent URL",
+            value=st.session_state.architect_agent_url,
+            help="URL of the architect agent",
+            key="architect_agent_url_input"
+        )
+        
+        # Developer Agent URL
+        st.session_state.developer_agent_url = st.text_input(
+            "Developer Agent URL",
+            value=st.session_state.developer_agent_url,
+            help="URL of the developer agent",
+            key="developer_agent_url_input"
+        )
+        
+        # Tester Agent URL
+        st.session_state.tester_agent_url = st.text_input(
+            "Tester Agent URL",
+            value=st.session_state.tester_agent_url,
+            help="URL of the tester agent",
+            key="tester_agent_url_input"
+        )
+        
         st.divider()
         st.markdown("### About")
         st.markdown("""
         This system uses multiple AI agents:
-        - **Idea Generator**: Creates innovative ideas
-        - **Critic**: Evaluates ideas for feasibility
-        - **Prioritizer**: Ranks ideas by importance
+        - **Architect**: Creates architectural plans
+        - **Developer**: Builds code implementation
+        - **Tester**: Tests the code and provides results
         """)
     
     # Main content area
-    st.header("Enter Your Brainstorming Topic")
+    st.header("Enter Your Project Request")
     
-    topic = st.text_area(
-        "What would you like to brainstorm?",
-        placeholder="e.g., Ways to improve remote team collaboration",
+    user_request = st.text_area(
+        "What would you like to build?",
+        placeholder="e.g., Build a simple calculator application",
         height=100
     )
     
-    if st.button("🚀 Generate Ideas", type="primary", use_container_width=True):
-        if not topic or not topic.strip():
-            st.error("Please enter a brainstorming topic.")
+    if st.button("🚀 Start Development", type="primary", use_container_width=True):
+        if not user_request or not user_request.strip():
+            st.error("Please enter a project request.")
             return
         
         # Show progress
         with st.spinner("Processing your request..."):
-            # Send request to host agent
-            result = send_brainstorming_request(topic.strip())
+            # Send request to host agent with configured URLs
+            result = send_development_request(
+                user_request.strip(),
+                st.session_state.host_agent_url,
+                st.session_state.architect_agent_url,
+                st.session_state.developer_agent_url,
+                st.session_state.tester_agent_url
+            )
         
         # Display results
         display_results(result)
     
     # Display example
-    with st.expander("💡 Example Topics"):
+    with st.expander("💡 Example Project Requests"):
         st.markdown("""
-        - Ways to reduce carbon footprint in daily life
-        - Innovative features for a mobile app
-        - Strategies to improve employee engagement
-        - New product ideas for a tech startup
-        - Solutions for urban transportation challenges
+        - Build a simple calculator application
+        - Create a todo list web app
+        - Develop a weather dashboard
+        - Build a chat application
+        - Create a file manager application
         """)
 
 

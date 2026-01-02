@@ -16,9 +16,9 @@ from host_agent.agent_executor import HostAgentExecutor
 
 # Setup Agent Card
 card = AgentCard(
-    name="BrainstormingHost",
-    description="Orchestrates the brainstorming session",
-    instructions="Send me a topic and I will generate, critique, and prioritize ideas.",
+    name="ProductOwnerHost",
+    description="Orchestrates the product development workflow",
+    instructions="I am a Product Owner/Orchestrator. Send me a project request and I will coordinate the development workflow through Architect, Developer, and Tester agents.",
     url="http://localhost:9999",
     version="0.0.1",
     capabilities={},
@@ -57,12 +57,19 @@ async def health():
     return {"status": "healthy", "service": "host-agent"}
 
 # REST API endpoints for UI communication
-@app.post("/api/brainstorm")
-async def create_brainstorm_task(request: Dict[str, Any]):
-    """Create a new brainstorming task and return task_id."""
-    topic = request.get("topic", "").strip()
-    if not topic:
-        raise HTTPException(status_code=400, detail="Topic is required")
+@app.post("/api/develop")
+async def create_development_task(request: Dict[str, Any]):
+    """Create a new development task and return task_id."""
+    user_request = request.get("user_request") or request.get("project_idea") or request.get("topic", "").strip()
+    if not user_request:
+        raise HTTPException(status_code=400, detail="User request or project idea is required")
+    
+    # Extract optional agent URLs from request
+    agent_urls = {
+        "architect_agent_url": request.get("architect_agent_url"),
+        "developer_agent_url": request.get("developer_agent_url"),
+        "tester_agent_url": request.get("tester_agent_url")
+    }
     
     task_id = str(uuid4())
     
@@ -70,13 +77,13 @@ async def create_brainstorm_task(request: Dict[str, Any]):
     rest_task_storage[task_id] = {
         "task_id": task_id,
         "status": "pending",
-        "topic": topic,
+        "user_request": user_request,
         "result": None,
         "error": None
     }
     
-    # Start processing asynchronously
-    asyncio.create_task(process_brainstorm_task(task_id, topic))
+    # Start processing asynchronously with agent URLs
+    asyncio.create_task(process_development_task(task_id, user_request, agent_urls))
     
     return JSONResponse({
         "task_id": task_id,
@@ -84,9 +91,9 @@ async def create_brainstorm_task(request: Dict[str, Any]):
     })
 
 
-@app.get("/api/brainstorm/{task_id}")
-async def get_brainstorm_task(task_id: str):
-    """Get the status and result of a brainstorming task."""
+@app.get("/api/develop/{task_id}")
+async def get_development_task(task_id: str):
+    """Get the status and result of a development task."""
     if task_id not in rest_task_storage:
         raise HTTPException(status_code=404, detail="Task not found")
     
@@ -104,14 +111,14 @@ async def get_brainstorm_task(task_id: str):
     return JSONResponse(response)
 
 
-async def process_brainstorm_task(task_id: str, topic: str):
-    """Process the brainstorming task using the orchestrator."""
+async def process_development_task(task_id: str, user_request: str, agent_urls: Dict[str, str] = None):
+    """Process the development task using the orchestrator."""
     try:
         # Update status to running
         rest_task_storage[task_id]["status"] = "running"
         
-        # Process using orchestrator
-        result = await orchestrator.process_brainstorming_request(topic)
+        # Process using orchestrator with optional agent URLs
+        result = await orchestrator.process_development_request(user_request, agent_urls=agent_urls)
         
         # Store result
         rest_task_storage[task_id]["status"] = "completed"

@@ -17,33 +17,31 @@ from a2a.types import (
 )
 from utils.logger import AgentLogger
 
-env_path = Path(__file__).parent / '.env'
+project_root = Path(__file__).parent.parent
+env_path = project_root / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# After load_dotenv()
-print(f"IDEA_AGENT_URL: {os.getenv('IDEA_AGENT_URL')}")
-print(f"CRITIC_AGENT_URL: {os.getenv('CRITIC_AGENT_URL')}")
-print(f"PRIORITIZER_AGENT_URL: {os.getenv('PRIORITIZER_AGENT_URL')}")
+
 
 class RemoteAgentConnection:
     """
-    Manages connections to remote agents (Idea, Critic, Prioritizer).
+    Manages connections to remote agents (Architect, Developer, Tester).
     """
     def __init__(self):
         self.logger = AgentLogger("host_agent_connection")
-        self.idea_client = None
-        self.critic_client = None
-        self.prioritizer_client = None
-        self.idea_card = None
-        self.critic_card = None
-        self.prioritizer_card = None
+        self.architect_client = None
+        self.developer_client = None
+        self.tester_client = None
+        self.architect_card = None
+        self.developer_card = None
+        self.tester_card = None
         self._httpx_client = None
 
     async def _get_httpx_client(self):
         if self._httpx_client is None:
             # Add headers to help with proxy compatibility
             headers = {
-                "User-Agent": "Brainstorming-Host-Agent/1.0",
+                "User-Agent": "Product-Development-Host-Agent/1.0",
             }
             self._httpx_client = httpx.AsyncClient(
                 timeout=120.0, 
@@ -72,41 +70,62 @@ class RemoteAgentConnection:
         client = A2AClient(httpx_client=httpx_client, agent_card=card)
         return client, card
 
-    async def discover_all_agents(self):
+    async def discover_all_agents(self, agent_urls: Dict[str, str] = None):
         """
         Connects to all required remote agents.
         This is a lazy initialization step.
+        
+        Args:
+            agent_urls: Optional dictionary with keys: architect_agent_url, developer_agent_url, tester_agent_url
+                       If provided, these URLs will be used instead of environment variables.
         """
         self.logger.log_activity("Attempting to connect to remote agents...")
         
-        # Get agent URLs from environment variables with defaults
-        idea_agent_url = os.getenv("IDEA_AGENT_URL")
-        self.logger.log_activity(f"Idea Agent URL: {idea_agent_url}")
-        critic_agent_url = os.getenv("CRITIC_AGENT_URL")
-        self.logger.log_activity(f"Critic Agent URL: {critic_agent_url}")
-        prioritizer_agent_url = os.getenv("PRIORITIZER_AGENT_URL")
-        self.logger.log_activity(f"Prioritizer Agent URL: {prioritizer_agent_url}")
+        # Get agent URLs from provided dict or environment variables
+        if agent_urls:
+            architect_agent_url = agent_urls.get("architect_agent_url") or os.getenv("ARCHITECT_AGENT_URL")
+            developer_agent_url = agent_urls.get("developer_agent_url") or os.getenv("DEVELOPER_AGENT_URL")
+            tester_agent_url = agent_urls.get("tester_agent_url") or os.getenv("TESTER_AGENT_URL")
+            self.logger.log_activity("Using agent URLs from request (with env fallback)")
+        else:
+            architect_agent_url = os.getenv("ARCHITECT_AGENT_URL")
+            developer_agent_url = os.getenv("DEVELOPER_AGENT_URL")
+            tester_agent_url = os.getenv("TESTER_AGENT_URL")
+            self.logger.log_activity("Using agent URLs from environment variables")
         
-        # Connect to Idea Agent
-        try:
-            self.idea_client, self.idea_card = await self._connect_to_agent(idea_agent_url)
-            self.logger.log_activity(f"Connected to Idea Agent at {idea_agent_url}")
-        except Exception as e:
-            self.logger.log_error("Failed to connect to Idea Agent", e)
+        self.logger.log_activity(f"Architect Agent URL: {architect_agent_url}")
+        self.logger.log_activity(f"Developer Agent URL: {developer_agent_url}")
+        self.logger.log_activity(f"Tester Agent URL: {tester_agent_url}")
+        
+        # Connect to Architect Agent
+        if architect_agent_url:
+            try:
+                self.architect_client, self.architect_card = await self._connect_to_agent(architect_agent_url)
+                self.logger.log_activity(f"Connected to Architect Agent at {architect_agent_url}")
+            except Exception as e:
+                self.logger.log_error("Failed to connect to Architect Agent", e)
+        else:
+            self.logger.log_error("Architect Agent URL is not configured", ValueError("Architect Agent URL is missing"))
             
-        # Connect to Critic Agent
-        try:
-            self.critic_client, self.critic_card = await self._connect_to_agent(critic_agent_url)
-            self.logger.log_activity(f"Connected to Critic Agent at {critic_agent_url}")
-        except Exception as e:
-            self.logger.log_error("Failed to connect to Critic Agent", e)
+        # Connect to Developer Agent
+        if developer_agent_url:
+            try:
+                self.developer_client, self.developer_card = await self._connect_to_agent(developer_agent_url)
+                self.logger.log_activity(f"Connected to Developer Agent at {developer_agent_url}")
+            except Exception as e:
+                self.logger.log_error("Failed to connect to Developer Agent", e)
+        else:
+            self.logger.log_error("Developer Agent URL is not configured", ValueError("Developer Agent URL is missing"))
             
-        # Connect to Prioritizer Agent
-        try:
-            self.prioritizer_client, self.prioritizer_card = await self._connect_to_agent(prioritizer_agent_url)
-            self.logger.log_activity(f"Connected to Prioritizer Agent at {prioritizer_agent_url}")
-        except Exception as e:
-            self.logger.log_error("Failed to connect to Prioritizer Agent", e)
+        # Connect to Tester Agent
+        if tester_agent_url:
+            try:
+                self.tester_client, self.tester_card = await self._connect_to_agent(tester_agent_url)
+                self.logger.log_activity(f"Connected to Tester Agent at {tester_agent_url}")
+            except Exception as e:
+                self.logger.log_error("Failed to connect to Tester Agent", e)
+        else:
+            self.logger.log_error("Tester Agent URL is not configured", ValueError("Tester Agent URL is missing"))
 
     def _create_message_payload(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create the proper message payload for A2A protocol."""
@@ -300,26 +319,26 @@ class RemoteAgentConnection:
         # This should not be reached, but just in case
         return {"error": "Failed after all retries"}
 
-    async def send_task_to_idea_agent(self, topic: str) -> Dict[str, Any]:
-        if not self.idea_client:
+    async def send_task_to_architect_agent(self, user_request: str) -> Dict[str, Any]:
+        if not self.architect_client:
             await self.discover_all_agents()
-        if not self.idea_client:
-             raise RuntimeError("Idea Agent is not available")
+        if not self.architect_client:
+             raise RuntimeError("Architect Agent is not available")
         
-        return await self._send_and_collect_response(self.idea_client, {"topic": topic})
+        return await self._send_and_collect_response(self.architect_client, {"user_request": user_request})
 
-    async def send_task_to_critic_agent(self, idea: str) -> Dict[str, Any]:
-        if not self.critic_client:
+    async def send_task_to_developer_agent(self, architecture_plan: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.developer_client:
             await self.discover_all_agents()
-        if not self.critic_client:
-             raise RuntimeError("Critic Agent is not available")
+        if not self.developer_client:
+             raise RuntimeError("Developer Agent is not available")
         
-        return await self._send_and_collect_response(self.critic_client, {"idea": idea})
+        return await self._send_and_collect_response(self.developer_client, {"architecture_plan": architecture_plan})
 
-    async def send_task_to_prioritizer_agent(self, ideas_with_critiques: List[Dict[str, str]]) -> Dict[str, Any]:
-        if not self.prioritizer_client:
+    async def send_task_to_tester_agent(self, code_data: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.tester_client:
             await self.discover_all_agents()
-        if not self.prioritizer_client:
-             raise RuntimeError("Prioritizer Agent is not available")
+        if not self.tester_client:
+             raise RuntimeError("Tester Agent is not available")
         
-        return await self._send_and_collect_response(self.prioritizer_client, {"ideas_with_critiques": ideas_with_critiques})
+        return await self._send_and_collect_response(self.tester_client, {"code": code_data})

@@ -3,10 +3,13 @@ import os
 import json
 import re
 import asyncio
+from pathlib import Path
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 
-load_dotenv()
+project_root = Path(__file__).parent.parent
+env_path = project_root / ".env"
+load_dotenv(dotenv_path=env_path)
 
 class PrioritizerAgent:
     def __init__(self):

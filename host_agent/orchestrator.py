@@ -7,199 +7,228 @@ from utils.logger import AgentLogger
 
 
 class Orchestrator:
-    """Orchestrates the brainstorming workflow across multiple agents."""
+    """Orchestrates the product development workflow across multiple agents."""
     
     def __init__(self):
         self.remote_connection = RemoteAgentConnection()
         self.logger = AgentLogger("host_agent")
         self._agents_connected = False
+        self._last_agent_urls = None  # Track last used URLs to avoid unnecessary reconnections
     
-    async def _ensure_connected(self):
+    async def _ensure_connected(self, agent_urls: Dict[str, str] = None):
         """Ensure agents are connected (lazy initialization)."""
+        # Convert agent_urls to a comparable format (remove None values for comparison)
+        normalized_urls = {k: v for k, v in (agent_urls or {}).items() if v} if agent_urls else None
+        
+        # Only reconnect if:
+        # 1. Not yet connected, OR
+        # 2. URLs are provided AND different from what we used before
+        should_reconnect = False
         if not self._agents_connected:
-            self.logger.log_activity("Connecting to remote agents (lazy initialization)")
-            await self.remote_connection.discover_all_agents()
+            should_reconnect = True
+        elif normalized_urls:
+            # Compare with stored URLs
+            if self._last_agent_urls is None or normalized_urls != self._last_agent_urls:
+                should_reconnect = True
+        
+        if should_reconnect:
+            if normalized_urls:
+                self.logger.log_activity("Connecting/reconnecting to remote agents with provided URLs")
+            else:
+                self.logger.log_activity("Connecting to remote agents (lazy initialization)")
+            await self.remote_connection.discover_all_agents(agent_urls=agent_urls)
             self._agents_connected = True
+            # Store the URLs we used (normalized to avoid reconnecting when URLs are the same)
+            self._last_agent_urls = normalized_urls
+        else:
+            # URLs are same as before, reuse existing connections
+            self.logger.log_activity("Reusing existing agent connections (URLs unchanged)")
     
-    async def process_brainstorming_request(self, topic: str) -> Dict[str, Any]:
+    async def process_development_request(self, user_request: str, agent_urls: Dict[str, str] = None) -> Dict[str, Any]:
         """
-        Process a brainstorming request through the multi-agent workflow.
+        Process a product development request through the multi-agent workflow.
         
         Workflow:
-        1. Generate ideas using Idea Agent
-        2. Critique each idea using Critic Agent
-        3. Prioritize ideas using Prioritizer Agent
+        1. Create architectural plan using Architect Agent
+        2. Build code implementation using Developer Agent
+        3. Test the code using Tester Agent
         
         Args:
-            topic: The brainstorming topic/context
+            user_request: The project request/idea (e.g., "build a simple calculator application")
+            agent_urls: Optional dictionary with keys: architect_agent_url, developer_agent_url, tester_agent_url
             
         Returns:
-            Dictionary containing prioritized ideas with critiques
+            Dictionary containing architectural plan, code, and test results
         """
         workflow_id = str(uuid.uuid4())
-        self.logger.log_activity("Starting brainstorming workflow", {
+        self.logger.log_activity("Starting product development workflow", {
             "workflow_id": workflow_id,
-            "topic": topic
+            "user_request": user_request,
+            "agent_urls_provided": agent_urls is not None
         })
         
-        # Ensure agents are connected (lazy initialization)
-        await self._ensure_connected()
+        # Ensure agents are connected (lazy initialization) with optional URLs
+        await self._ensure_connected(agent_urls=agent_urls)
         
         try:
-            # Step 1: Generate ideas
-            self.logger.log_activity("Step 1: Generating ideas", {
+            # Step 1: Create architectural plan
+            self.logger.log_activity("Step 1: Creating architectural plan", {
                 "workflow_id": workflow_id,
-                "topic": topic
+                "user_request": user_request
             })
-            ideas_result = await self.remote_connection.send_task_to_idea_agent(topic)
-            
-            # DEBUG: Log the raw response
-            self.logger.log_activity(f"Raw ideas_result: {ideas_result}")
-            self.logger.log_activity(f"ideas_result type: {type(ideas_result)}")
-            self.logger.log_activity(f"ideas_result keys: {list(ideas_result.keys()) if isinstance(ideas_result, dict) else 'N/A'}")
+            plan_result = await self.remote_connection.send_task_to_architect_agent(user_request)
             
             # Handle potential 'output' wrapper or direct response
-            # Some A2A implementations wrap result in 'output', others return direct dict
-            if "output" in ideas_result:
-                output_data = ideas_result["output"]
-                ideas = output_data.get("ideas", [])
+            if "output" in plan_result:
+                output_data = plan_result["output"]
+                plan = output_data.get("plan")
                 error = output_data.get("error")
             else:
-                ideas = ideas_result.get("ideas", [])
-                error = ideas_result.get("error")
+                plan = plan_result.get("plan")
+                error = plan_result.get("error")
             
             # Check for errors first
             if error:
-                self.logger.log_error("Idea generation failed", ValueError(error), {
+                self.logger.log_error("Architecture planning failed", ValueError(error), {
                     "workflow_id": workflow_id,
-                    "topic": topic,
+                    "user_request": user_request,
                     "error": error
                 })
                 return {
                     "status": "error",
                     "message": error,
-                    "ideas": [],
                     "workflow_id": workflow_id
                 }
             
-            self.logger.log_activity("Ideas generated", {
-                "workflow_id": workflow_id,
-                "ideas_count": len(ideas)
-            })
-            
-            if not ideas:
-                self.logger.log_error("No ideas generated", ValueError("No ideas generated"), {
+            if not plan:
+                self.logger.log_error("No plan generated", ValueError("No plan generated"), {
                     "workflow_id": workflow_id,
-                    "topic": topic,
-                    "raw_response": str(ideas_result)
+                    "user_request": user_request,
+                    "raw_response": str(plan_result)
                 })
                 return {
                     "status": "error",
-                    "message": "No ideas generated",
-                    "ideas": [],
+                    "message": "No architectural plan generated",
                     "workflow_id": workflow_id
                 }
             
-            # Step 2: Critique each idea
-            self.logger.log_activity("Step 2: Critiquing ideas", {
-                "workflow_id": workflow_id,
-                "ideas_count": len(ideas)
-            })
-            ideas_with_critiques = []
-            for idx, idea in enumerate(ideas, 1):
-                self.logger.log_activity(f"Critiquing idea {idx}/{len(ideas)}", {
-                    "workflow_id": workflow_id,
-                    "idea_index": idx,
-                    "idea_preview": idea[:50] + "..." if len(idea) > 50 else idea
-                })
-                
-                # Add a small delay between requests to avoid rate limiting on the proxy
-                if idx > 1:
-                    await asyncio.sleep(1.5)  # 1.5 second delay between requests
-                
-                critique_result = await self.remote_connection.send_task_to_critic_agent(idea)
-                
-                # Check for errors in critique response
-                if "output" in critique_result:
-                    output_data = critique_result["output"]
-                    critique = output_data.get("critique", "")
-                    error = output_data.get("error")
-                else:
-                    critique = critique_result.get("critique", "")
-                    error = critique_result.get("error")
-                
-                if error:
-                    self.logger.log_error(f"Critique failed for idea {idx}", ValueError(error), {
-                        "workflow_id": workflow_id,
-                        "idea_index": idx,
-                        "error": error
-                    })
-                    # Use error as critique or skip this idea
-                    critique = f"Error: {error}"
-
-                ideas_with_critiques.append({
-                    "idea": idea,
-                    "critique": critique
-                })
-            
-            self.logger.log_activity("All ideas critiqued", {
-                "workflow_id": workflow_id,
-                "critiqued_count": len(ideas_with_critiques)
+            self.logger.log_activity("Architectural plan created", {
+                "workflow_id": workflow_id
             })
             
-            # Step 3: Prioritize ideas
-            self.logger.log_activity("Step 3: Prioritizing ideas", {
-                "workflow_id": workflow_id,
-                "ideas_count": len(ideas_with_critiques)
+            # Step 2: Build code implementation
+            self.logger.log_activity("Step 2: Building code implementation", {
+                "workflow_id": workflow_id
             })
-            prioritization_result = await self.remote_connection.send_task_to_prioritizer_agent(
-                ideas_with_critiques
-            )
             
-            # Check for errors in prioritization response
-            if "output" in prioritization_result:
-                output_data = prioritization_result["output"]
-                prioritized_ideas = output_data.get("prioritized_ideas", [])
+            # Add a small delay between requests to avoid rate limiting
+            await asyncio.sleep(1.5)
+            
+            code_result = await self.remote_connection.send_task_to_developer_agent(plan)
+            
+            # Check for errors in code generation response
+            if "output" in code_result:
+                output_data = code_result["output"]
+                code = output_data.get("code")
                 error = output_data.get("error")
             else:
-                prioritized_ideas = prioritization_result.get("prioritized_ideas", [])
-                error = prioritization_result.get("error")
+                code = code_result.get("code")
+                error = code_result.get("error")
             
             if error:
-                self.logger.log_error("Prioritization failed", ValueError(error), {
+                self.logger.log_error("Code generation failed", ValueError(error), {
                     "workflow_id": workflow_id,
                     "error": error
                 })
                 return {
                     "status": "error",
-                    "message": f"Prioritization failed: {error}",
-                    "ideas": [],
+                    "message": f"Code generation failed: {error}",
+                    "plan": plan,
+                    "workflow_id": workflow_id
+                }
+            
+            if not code:
+                self.logger.log_error("No code generated", ValueError("No code generated"), {
+                    "workflow_id": workflow_id,
+                    "raw_response": str(code_result)
+                })
+                return {
+                    "status": "error",
+                    "message": "No code generated",
+                    "plan": plan,
+                    "workflow_id": workflow_id
+                }
+            
+            self.logger.log_activity("Code implementation created", {
+                "workflow_id": workflow_id
+            })
+            
+            # Step 3: Test the code
+            self.logger.log_activity("Step 3: Testing code", {
+                "workflow_id": workflow_id
+            })
+            
+            # Add a small delay between requests to avoid rate limiting
+            await asyncio.sleep(1.5)
+            
+            test_result = await self.remote_connection.send_task_to_tester_agent(code)
+            
+            # Check for errors in test response
+            if "output" in test_result:
+                output_data = test_result["output"]
+                test_results = output_data.get("test_results")
+                error = output_data.get("error")
+            else:
+                test_results = test_result.get("test_results")
+                error = test_result.get("error")
+            
+            if error:
+                self.logger.log_error("Testing failed", ValueError(error), {
+                    "workflow_id": workflow_id,
+                    "error": error
+                })
+                return {
+                    "status": "error",
+                    "message": f"Testing failed: {error}",
+                    "plan": plan,
+                    "code": code,
+                    "workflow_id": workflow_id
+                }
+            
+            if not test_results:
+                self.logger.log_error("No test results generated", ValueError("No test results"), {
+                    "workflow_id": workflow_id,
+                    "raw_response": str(test_result)
+                })
+                return {
+                    "status": "error",
+                    "message": "No test results generated",
+                    "plan": plan,
+                    "code": code,
                     "workflow_id": workflow_id
                 }
             
             self.logger.log_activity("Workflow completed successfully", {
-                "workflow_id": workflow_id,
-                "total_ideas": len(ideas),
-                "prioritized_count": len(prioritized_ideas)
+                "workflow_id": workflow_id
             })
             
             return {
                 "status": "success",
-                "topic": topic,
-                "total_ideas": len(ideas),
-                "prioritized_ideas": prioritized_ideas,
+                "user_request": user_request,
+                "plan": plan,
+                "code": code,
+                "test_results": test_results,
                 "workflow_id": workflow_id
             }
             
         except Exception as e:
             self.logger.log_error("Workflow failed", e, {
                 "workflow_id": workflow_id,
-                "topic": topic
+                "user_request": user_request
             })
             return {
                 "status": "error",
                 "message": str(e),
-                "ideas": [],
                 "workflow_id": workflow_id
             }
     
@@ -208,22 +237,24 @@ class Orchestrator:
         Handle an incoming task from the A2A server.
         
         Args:
-            task_input: Task input containing the brainstorming topic
+            task_input: Task input containing the user request/project idea
             
         Returns:
-            Task result with prioritized ideas
+            Task result with plan, code, and test results
         """
-        topic = task_input.get("topic", "")
+        user_request = task_input.get("user_request") or task_input.get("project_idea") or task_input.get("topic", "")
         # Fallback if wrapped in input
-        if not topic:
-             topic = task_input.get("input", {}).get("topic", "")
+        if not user_request:
+             user_request = task_input.get("input", {}).get("user_request") or \
+                          task_input.get("input", {}).get("project_idea") or \
+                          task_input.get("input", {}).get("topic", "")
 
-        if not topic:
+        if not user_request:
             return {
                 "status": "error",
-                "message": "Topic is required"
+                "message": "User request or project idea is required"
             }
         
-        result = await self.process_brainstorming_request(topic)
+        result = await self.process_development_request(user_request)
         return result
 

@@ -12,7 +12,9 @@ wheels/
 # Environment files
 .env
 
-
+critic_agent/
+idea_agent/
+prioritizer_agent/
 # Logs
 logs/*.log
 logs/*.jsonl

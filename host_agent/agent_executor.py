@@ -83,24 +83,24 @@ class HostAgentExecutor(AgentExecutor):
             print(f"[HostAgent] Extracted task_input: {task_input}")
             self.logger.log_activity(f"Extracted task_input: {task_input}")
             
-            topic = task_input.get("topic", "") if isinstance(task_input, dict) else ""
-            print(f"[HostAgent] Extracted topic: '{topic}'")
-            self.logger.log_activity(f"Extracted topic: '{topic}'")
+            user_request = task_input.get("user_request") or task_input.get("project_idea") or task_input.get("topic", "") if isinstance(task_input, dict) else ""
+            print(f"[HostAgent] Extracted user_request: '{user_request}'")
+            self.logger.log_activity(f"Extracted user_request: '{user_request}'")
             
-            if not topic:
-                print(f"[HostAgent] ERROR: No topic found!")
-                self.logger.log_error("Topic is required", ValueError("No topic"))
+            if not user_request:
+                print(f"[HostAgent] ERROR: No user request found!")
+                self.logger.log_error("User request is required", ValueError("No user request"))
                 return
 
-            # Process brainstorming request using orchestrator
-            result = await self.orchestrator.process_brainstorming_request(topic)
+            # Process development request using orchestrator
+            result = await self.orchestrator.process_development_request(user_request)
             
             # Send the result as an artifact
             result_json = json.dumps(result) if isinstance(result, dict) else str(result)
             
             artifact = Artifact(
                 artifact_id=uuid4().hex,
-                name="brainstorming_result",
+                name="development_result",
                 parts=[TextPart(text=result_json)]
             )
             
