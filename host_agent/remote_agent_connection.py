@@ -1,8 +1,10 @@
 from typing import Any, Dict, List
 import asyncio
 import json
+import os
 from uuid import uuid4
 import httpx
+from dotenv import load_dotenv
 # Note: A2AClient is deprecated but still functional.
 # When ClientFactory becomes available in the SDK, migrate to: ClientFactory.connect(...)
 from a2a.client import A2ACardResolver, A2AClient
@@ -13,6 +15,9 @@ from a2a.types import (
     TaskQueryParams,
 )
 from utils.logger import AgentLogger
+
+# Load environment variables
+load_dotenv()
 
 
 class RemoteAgentConnection:
@@ -49,24 +54,29 @@ class RemoteAgentConnection:
         """
         self.logger.log_activity("Attempting to connect to remote agents...")
         
+        # Get agent URLs from environment variables with defaults
+        idea_agent_url = os.getenv("IDEA_AGENT_URL")
+        critic_agent_url = os.getenv("CRITIC_AGENT_URL")
+        prioritizer_agent_url = os.getenv("PRIORITIZER_AGENT_URL")
+        
         # Connect to Idea Agent
         try:
-            self.idea_client, self.idea_card = await self._connect_to_agent("http://localhost:9991")
-            self.logger.log_activity("Connected to Idea Agent at http://localhost:9991")
+            self.idea_client, self.idea_card = await self._connect_to_agent(idea_agent_url)
+            self.logger.log_activity(f"Connected to Idea Agent at {idea_agent_url}")
         except Exception as e:
             self.logger.log_error("Failed to connect to Idea Agent", e)
             
         # Connect to Critic Agent
         try:
-            self.critic_client, self.critic_card = await self._connect_to_agent("http://localhost:9992")
-            self.logger.log_activity("Connected to Critic Agent at http://localhost:9992")
+            self.critic_client, self.critic_card = await self._connect_to_agent(critic_agent_url)
+            self.logger.log_activity(f"Connected to Critic Agent at {critic_agent_url}")
         except Exception as e:
             self.logger.log_error("Failed to connect to Critic Agent", e)
             
         # Connect to Prioritizer Agent
         try:
-            self.prioritizer_client, self.prioritizer_card = await self._connect_to_agent("http://localhost:9993")
-            self.logger.log_activity("Connected to Prioritizer Agent at http://localhost:9993")
+            self.prioritizer_client, self.prioritizer_card = await self._connect_to_agent(prioritizer_agent_url)
+            self.logger.log_activity(f"Connected to Prioritizer Agent at {prioritizer_agent_url}")
         except Exception as e:
             self.logger.log_error("Failed to connect to Prioritizer Agent", e)
 

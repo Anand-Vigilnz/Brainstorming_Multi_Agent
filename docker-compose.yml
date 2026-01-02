@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # Idea Generator Agent
+  idea-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brainstorming-idea-agent
+    command: python -m idea_agent
+    ports:
+      - "9991:9991"
+    environment:
+      - IDEA_AGENT_PORT=9991
+      - IDEA_AGENT_NAME=Idea Generator Agent
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+    volumes:
+      - ./logs:/app/logs
+      - ./idea_agent/.env:/app/idea_agent/.env:ro
+    networks:
+      - brainstorming-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9991/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Critic Agent
+  critic-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brainstorming-critic-agent
+    command: python -m critic_agent
+    ports:
+      - "9992:9992"
+    environment:
+      - CRITIC_AGENT_PORT=9992
+      - CRITIC_AGENT_NAME=Critic Agent
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+    volumes:
+      - ./logs:/app/logs
+      - ./critic_agent/.env:/app/critic_agent/.env:ro
+    networks:
+      - brainstorming-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9992/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Prioritizer Agent
+  prioritizer-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brainstorming-prioritizer-agent
+    command: python -m prioritizer_agent
+    ports:
+      - "9993:9993"
+    environment:
+      - PRIORITIZER_AGENT_PORT=9993
+      - PRIORITIZER_AGENT_NAME=Prioritizer Agent
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+    volumes:
+      - ./logs:/app/logs
+      - ./prioritizer_agent/.env:/app/prioritizer_agent/.env:ro
+    networks:
+      - brainstorming-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9993/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Host Agent (Orchestrator)
+  host-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brainstorming-host-agent
+    command: python -m host_agent
+    ports:
+      - "9999:9999"
+    environment:
+      - HOST_AGENT_PORT=9999
+      - HOST_AGENT_NAME=Brainstorming Orchestrator
+      - IDEA_AGENT_URL=http://idea-agent:9991
+      - CRITIC_AGENT_URL=http://critic-agent:9992
+      - PRIORITIZER_AGENT_URL=http://prioritizer-agent:9993
+    volumes:
+      - ./logs:/app/logs
+      - ./host_agent/.env:/app/host_agent/.env:ro
+    networks:
+      - brainstorming-network
+    depends_on:
+      idea-agent:
+        condition: service_healthy
+      critic-agent:
+        condition: service_healthy
+      prioritizer-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9999/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Streamlit UI
+  streamlit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brainstorming-streamlit-ui
+    command: streamlit run streamlit_app/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8501:8501"
+    environment:
+      - HOST_AGENT_URL=http://host-agent:9999
+    volumes:
+      - ./logs:/app/logs
+      - ./streamlit_app/.env:/app/streamlit_app/.env:ro
+    networks:
+      - brainstorming-network
+    depends_on:
+      host-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy (Optional but recommended for production)
+  nginx:
+    image: nginx:alpine
+    container_name: brainstorming-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - brainstorming-network
+    depends_on:
+      - streamlit-app
+    restart: unless-stopped
+
+networks:
+  brainstorming-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
