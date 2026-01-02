@@ -5,9 +5,11 @@ import asyncio
 import json
 import html
 from typing import Dict, Any
-
+# from dotenv import load_dotenv
 import httpx
 
+
+# load_dotenv()
 
 # Page configuration
 st.set_page_config(
@@ -18,9 +20,7 @@ st.set_page_config(
 
 # Configuration
 # HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "http://localhost:9999")
-# HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "http://localhost:9999")
-# HOST_AGENT_URL = "https://devagentguard.vigilnz.com/agent"
-HOST_AGENT_URL = "http://localhost:8080/agent" or "https://devagentguard.vigilnz.com/agent"
+HOST_AGENT_URL = "https://devagentguard.vigilnz.com/agent"
 
 
 def send_brainstorming_request(topic: str) -> Dict[str, Any]:

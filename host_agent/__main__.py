@@ -51,6 +51,10 @@ a2a_app = A2AFastAPIApplication(card, request_handler)
 app = FastAPI()
 a2a_app.add_routes_to_app(app)
 
+# Health check endpoint
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "host-agent"}
 
 # REST API endpoints for UI communication
 @app.post("/api/brainstorm")

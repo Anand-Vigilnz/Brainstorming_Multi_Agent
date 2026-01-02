@@ -112,6 +112,11 @@ class Orchestrator:
                     "idea_index": idx,
                     "idea_preview": idea[:50] + "..." if len(idea) > 50 else idea
                 })
+                
+                # Add a small delay between requests to avoid rate limiting on the proxy
+                if idx > 1:
+                    await asyncio.sleep(1.5)  # 1.5 second delay between requests
+                
                 critique_result = await self.remote_connection.send_task_to_critic_agent(idea)
                 
                 # Check for errors in critique response

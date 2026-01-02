@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Idea Generator Agent
   idea-agent:

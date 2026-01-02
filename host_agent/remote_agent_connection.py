@@ -4,6 +4,7 @@ import json
 import os
 from uuid import uuid4
 import httpx
+from pathlib import Path
 from dotenv import load_dotenv
 # Note: A2AClient is deprecated but still functional.
 # When ClientFactory becomes available in the SDK, migrate to: ClientFactory.connect(...)
@@ -16,9 +17,13 @@ from a2a.types import (
 )
 from utils.logger import AgentLogger
 
-# Load environment variables
-load_dotenv()
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
+# After load_dotenv()
+print(f"IDEA_AGENT_URL: {os.getenv('IDEA_AGENT_URL')}")
+print(f"CRITIC_AGENT_URL: {os.getenv('CRITIC_AGENT_URL')}")
+print(f"PRIORITIZER_AGENT_URL: {os.getenv('PRIORITIZER_AGENT_URL')}")
 
 class RemoteAgentConnection:
     """
@@ -36,7 +41,15 @@ class RemoteAgentConnection:
 
     async def _get_httpx_client(self):
         if self._httpx_client is None:
-            self._httpx_client = httpx.AsyncClient(timeout=120.0)
+            # Add headers to help with proxy compatibility
+            headers = {
+                "User-Agent": "Brainstorming-Host-Agent/1.0",
+            }
+            self._httpx_client = httpx.AsyncClient(
+                timeout=120.0, 
+                verify=False,
+                headers=headers
+            )
         return self._httpx_client
 
     async def _connect_to_agent(self, base_url: str):
@@ -44,6 +57,18 @@ class RemoteAgentConnection:
         httpx_client = await self._get_httpx_client()
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
         card = await resolver.get_agent_card()
+        
+        # Override the card's URL with the base_url (proxy URL)
+        # The agent card may contain an internal URL (e.g., http://localhost:3002/agent/remote1),
+        # but we need to use the proxy URL (e.g., https://devagentguard.vigilnz.com/agent/remote1)
+        # to connect from the Host Agent
+        if hasattr(card, 'url') and card.url != base_url:
+            self.logger.log_activity(
+                f"Overriding agent card URL from '{card.url}' to '{base_url}' "
+                "(using proxy URL instead of internal URL)"
+            )
+            card.url = base_url
+        
         client = A2AClient(httpx_client=httpx_client, agent_card=card)
         return client, card
 
@@ -56,8 +81,11 @@ class RemoteAgentConnection:
         
         # Get agent URLs from environment variables with defaults
         idea_agent_url = os.getenv("IDEA_AGENT_URL")
+        self.logger.log_activity(f"Idea Agent URL: {idea_agent_url}")
         critic_agent_url = os.getenv("CRITIC_AGENT_URL")
+        self.logger.log_activity(f"Critic Agent URL: {critic_agent_url}")
         prioritizer_agent_url = os.getenv("PRIORITIZER_AGENT_URL")
+        self.logger.log_activity(f"Prioritizer Agent URL: {prioritizer_agent_url}")
         
         # Connect to Idea Agent
         try:
@@ -102,153 +130,175 @@ class RemoteAgentConnection:
         
         self.logger.log_activity(f"Sending request with payload: {input_data}")
         
-        try:
-            # 1. Send Task
-            response = await client.send_message(request)
-            
-            # Access Task from RootModel - handle SendMessageSuccessResponse
-            response_data = response.root if hasattr(response, 'root') else response
-            
-            # Extract task from response
-            if hasattr(response_data, 'result'):
-                task = response_data.result
-            elif hasattr(response_data, 'id') and hasattr(response_data, 'status'):
-                # It's already a Task object
-                task = response_data
-            else:
-                task = response_data
-            
-            if not task:
-                return {"error": "Empty response from agent"}
+        # Retry logic for 403 errors (rate limiting) and other transient errors
+        max_retries = 3
+        retry_delay = 2  # Start with 2 seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # 1. Send Task
+                response = await client.send_message(request)
                 
-            task_id = task.id if hasattr(task, 'id') else None
-            if not task_id and hasattr(task, 'root') and hasattr(task.root, 'id'): 
-                 task_id = task.root.id
-
-            if not task_id:
-                return {"error": "Could not extract task ID from response"}
-
-            self.logger.log_activity(f"Task submitted with ID: {task_id}. Checking status...")
-
-            # Check if task is already completed
-            final_task = None
-            if hasattr(task, 'status') and task.status:
-                state = task.status.state if hasattr(task.status, 'state') else None
-                if state == 'completed':
-                    final_task = task
-                    self.logger.log_activity("Task already completed, using initial response")
-                elif state == 'failed':
-                    return {"error": f"Task failed: {getattr(task.status, 'message', 'Unknown error')}"}
-
-            # 2. Poll for completion if not already completed
-            if not final_task:
-                import time
-                end_time = time.time() + 60
+                # Access Task from RootModel - handle SendMessageSuccessResponse
+                response_data = response.root if hasattr(response, 'root') else response
                 
-                while time.time() < end_time:
-                    await asyncio.sleep(1)  # Reduced to 1 second for faster response
-                    
-                    # Retrieve latest task state
-                    try:
-                        get_req = GetTaskRequest(
-                            id=str(uuid4()),
-                            params=TaskQueryParams(id=task_id)
-                        )
-                        task_response = await client.get_task(get_req)
-                    except Exception as e:
-                        self.logger.log_error("Error getting task status", e)
-                        # Continue polling instead of raising
-                        continue
-                        
-                    # Handle GetTaskSuccessResponse wrapper
-                    task_response_data = task_response.root if hasattr(task_response, 'root') else task_response
-                    
-                    # Extract task from response
-                    if hasattr(task_response_data, 'result'):
-                        current_task = task_response_data.result
-                    elif hasattr(task_response_data, 'id') and hasattr(task_response_data, 'status'):
-                        current_task = task_response_data
-                    else:
-                        current_task = task_response_data
-                    
-                    if hasattr(current_task, 'status') and current_task.status:
-                         state = current_task.status.state if hasattr(current_task.status, 'state') else None
-                         if state == 'completed':
-                             final_task = current_task
-                             self.logger.log_activity("Task completed during polling")
-                             break
-                         elif state == 'failed':
-                             return {"error": f"Task failed: {getattr(current_task.status, 'message', 'Unknown error')}"}
+                # Extract task from response
+                if hasattr(response_data, 'result'):
+                    task = response_data.result
+                elif hasattr(response_data, 'id') and hasattr(response_data, 'status'):
+                    # It's already a Task object
+                    task = response_data
+                else:
+                    task = response_data
                 
+                if not task:
+                    return {"error": "Empty response from agent"}
+                    
+                task_id = task.id if hasattr(task, 'id') else None
+                if not task_id and hasattr(task, 'root') and hasattr(task.root, 'id'): 
+                     task_id = task.root.id
+
+                if not task_id:
+                    return {"error": "Could not extract task ID from response"}
+
+                self.logger.log_activity(f"Task submitted with ID: {task_id}. Checking status...")
+
+                # Check if task is already completed
+                final_task = None
+                if hasattr(task, 'status') and task.status:
+                    state = task.status.state if hasattr(task.status, 'state') else None
+                    if state == 'completed':
+                        final_task = task
+                        self.logger.log_activity("Task already completed, using initial response")
+                    elif state == 'failed':
+                        return {"error": f"Task failed: {getattr(task.status, 'message', 'Unknown error')}"}
+
+                # 2. Poll for completion if not already completed
                 if not final_task:
-                    return {"error": "Task timed out waiting for completion"}
-
-            # 3. Parse Artifacts from final task
-            final_result = {}
-            # Check for errors in final task status again just in case
-            if hasattr(final_task, 'status') and hasattr(final_task.status, 'state') and final_task.status.state == 'failed':
-                 return {"error": f"Task failed: {getattr(final_task.status, 'message', 'Unknown error')}"}
-
-            self.logger.log_activity(f"Final task has artifacts: {hasattr(final_task, 'artifacts')}")
-            if hasattr(final_task, 'artifacts'):
-                self.logger.log_activity(f"Artifacts count: {len(final_task.artifacts) if final_task.artifacts else 0}")
-
-            if hasattr(final_task, 'artifacts') and final_task.artifacts:
-                self.logger.log_activity(f"Found {len(final_task.artifacts)} artifacts in task.")
-                for idx, artifact in enumerate(final_task.artifacts):
-                    artifact_name = getattr(artifact, 'name', f'artifact_{idx}')
-                    self.logger.log_activity(f"Processing artifact {idx}: {artifact_name}")
+                    import time
+                    end_time = time.time() + 60
                     
-                    if hasattr(artifact, 'parts') and artifact.parts:
-                        self.logger.log_activity(f"Artifact has {len(artifact.parts)} parts")
-                        for part_idx, part in enumerate(artifact.parts):
-                            # Handle RootModel wrapper if present
-                            actual_part = part.root if hasattr(part, 'root') else part
+                    while time.time() < end_time:
+                        await asyncio.sleep(1)  # Reduced to 1 second for faster response
+                        
+                        # Retrieve latest task state
+                        try:
+                            get_req = GetTaskRequest(
+                                id=str(uuid4()),
+                                params=TaskQueryParams(id=task_id)
+                            )
+                            task_response = await client.get_task(get_req)
+                        except Exception as e:
+                            self.logger.log_error("Error getting task status", e)
+                            # Continue polling instead of raising
+                            continue
                             
-                            part_kind = getattr(actual_part, 'kind', 'unknown')
-                            self.logger.log_activity(f"Part {part_idx} kind: {part_kind}")
-                            
-                            if hasattr(actual_part, 'kind') and actual_part.kind == 'text' and hasattr(actual_part, 'text'):
-                                text_content = actual_part.text
-                                self.logger.log_activity(f"Part {part_idx} text content (first 300 chars): {text_content[:300]}...")
-                                try:
-                                    parsed = json.loads(text_content)
-                                    if isinstance(parsed, dict):
-                                        # Merge results if multiple artifacts
-                                        if final_result:
-                                            final_result.update(parsed)
-                                        else:
-                                            final_result = parsed
-                                        self.logger.log_activity(f"Successfully parsed result from artifact {idx}, part {part_idx}")
-                                        self.logger.log_activity(f"Parsed keys: {list(parsed.keys())}")
-                                    else:
-                                        self.logger.log_activity(f"Parsed content is not a dict: {type(parsed)}")
-                                except json.JSONDecodeError as e:
-                                    self.logger.log_activity(f"JSON decode error on artifact {idx}, part {part_idx}: {e}")
-                                    self.logger.log_activity(f"Raw text: {text_content[:500]}")
-                            else:
-                                self.logger.log_activity(f"Part {part_idx} is not text or missing content (kind: {part_kind})")
-                    else:
-                        self.logger.log_activity(f"Artifact {idx} has no parts")
-            else:
-                 self.logger.log_activity("No artifacts found in final task.")
-                 # Log task structure for debugging
-                 self.logger.log_activity(f"Task attributes: {[attr for attr in dir(final_task) if not attr.startswith('_')]}")
+                        # Handle GetTaskSuccessResponse wrapper
+                        task_response_data = task_response.root if hasattr(task_response, 'root') else task_response
+                        
+                        # Extract task from response
+                        if hasattr(task_response_data, 'result'):
+                            current_task = task_response_data.result
+                        elif hasattr(task_response_data, 'id') and hasattr(task_response_data, 'status'):
+                            current_task = task_response_data
+                        else:
+                            current_task = task_response_data
+                        
+                        if hasattr(current_task, 'status') and current_task.status:
+                             state = current_task.status.state if hasattr(current_task.status, 'state') else None
+                             if state == 'completed':
+                                 final_task = current_task
+                                 self.logger.log_activity("Task completed during polling")
+                                 break
+                             elif state == 'failed':
+                                 return {"error": f"Task failed: {getattr(current_task.status, 'message', 'Unknown error')}"}
+                    
+                    if not final_task:
+                        return {"error": "Task timed out waiting for completion"}
 
-            if final_result:
-                self.logger.log_activity(f"Returning final result with keys: {list(final_result.keys())}")
-                return final_result
+                # 3. Parse Artifacts from final task
+                final_result = {}
+                # Check for errors in final task status again just in case
+                if hasattr(final_task, 'status') and hasattr(final_task.status, 'state') and final_task.status.state == 'failed':
+                     return {"error": f"Task failed: {getattr(final_task.status, 'message', 'Unknown error')}"}
+
+                self.logger.log_activity(f"Final task has artifacts: {hasattr(final_task, 'artifacts')}")
+                if hasattr(final_task, 'artifacts'):
+                    self.logger.log_activity(f"Artifacts count: {len(final_task.artifacts) if final_task.artifacts else 0}")
+
+                if hasattr(final_task, 'artifacts') and final_task.artifacts:
+                    self.logger.log_activity(f"Found {len(final_task.artifacts)} artifacts in task.")
+                    for idx, artifact in enumerate(final_task.artifacts):
+                        artifact_name = getattr(artifact, 'name', f'artifact_{idx}')
+                        self.logger.log_activity(f"Processing artifact {idx}: {artifact_name}")
+                        
+                        if hasattr(artifact, 'parts') and artifact.parts:
+                            self.logger.log_activity(f"Artifact has {len(artifact.parts)} parts")
+                            for part_idx, part in enumerate(artifact.parts):
+                                # Handle RootModel wrapper if present
+                                actual_part = part.root if hasattr(part, 'root') else part
+                                
+                                part_kind = getattr(actual_part, 'kind', 'unknown')
+                                self.logger.log_activity(f"Part {part_idx} kind: {part_kind}")
+                                
+                                if hasattr(actual_part, 'kind') and actual_part.kind == 'text' and hasattr(actual_part, 'text'):
+                                    text_content = actual_part.text
+                                    self.logger.log_activity(f"Part {part_idx} text content (first 300 chars): {text_content[:300]}...")
+                                    try:
+                                        parsed = json.loads(text_content)
+                                        if isinstance(parsed, dict):
+                                            # Merge results if multiple artifacts
+                                            if final_result:
+                                                final_result.update(parsed)
+                                            else:
+                                                final_result = parsed
+                                            self.logger.log_activity(f"Successfully parsed result from artifact {idx}, part {part_idx}")
+                                            self.logger.log_activity(f"Parsed keys: {list(parsed.keys())}")
+                                        else:
+                                            self.logger.log_activity(f"Parsed content is not a dict: {type(parsed)}")
+                                    except json.JSONDecodeError as e:
+                                        self.logger.log_activity(f"JSON decode error on artifact {idx}, part {part_idx}: {e}")
+                                        self.logger.log_activity(f"Raw text: {text_content[:500]}")
+                                else:
+                                    self.logger.log_activity(f"Part {part_idx} is not text or missing content (kind: {part_kind})")
+                        else:
+                            self.logger.log_activity(f"Artifact {idx} has no parts")
+                else:
+                     self.logger.log_activity("No artifacts found in final task.")
+                     # Log task structure for debugging
+                     self.logger.log_activity(f"Task attributes: {[attr for attr in dir(final_task) if not attr.startswith('_')]}")
+
+                if final_result:
+                    self.logger.log_activity(f"Returning final result with keys: {list(final_result.keys())}")
+                    return final_result
+                    
+                self.logger.log_error("No result artifacts collected", ValueError("No artifacts"), {
+                    "task_id": task_id,
+                    "has_artifacts": hasattr(final_task, 'artifacts'),
+                    "artifacts_count": len(final_task.artifacts) if hasattr(final_task, 'artifacts') and final_task.artifacts else 0
+                })
+                return {"error": "No result artifacts collected"}
                 
-            self.logger.log_error("No result artifacts collected", ValueError("No artifacts"), {
-                "task_id": task_id,
-                "has_artifacts": hasattr(final_task, 'artifacts'),
-                "artifacts_count": len(final_task.artifacts) if hasattr(final_task, 'artifacts') and final_task.artifacts else 0
-            })
-            return {"error": "No result artifacts collected"}
-            
-        except Exception as e:
-            self.logger.log_error("Error during request", e)
-            return {"error": str(e)}
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a 403 error (rate limiting) or 503 error (service unavailable)
+                is_retryable_error = ("403" in error_str or "503" in error_str) and attempt < max_retries - 1
+                
+                if is_retryable_error:
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
+                    self.logger.log_activity(
+                        f"Received {error_str[:50]}... (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying after {wait_time} seconds..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # For other errors or final retry, log and return error
+                    self.logger.log_error("Error during request", e)
+                    return {"error": str(e)}
+        
+        # This should not be reached, but just in case
+        return {"error": "Failed after all retries"}
 
     async def send_task_to_idea_agent(self, topic: str) -> Dict[str, Any]:
         if not self.idea_client:

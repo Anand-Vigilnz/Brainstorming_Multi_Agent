@@ -43,6 +43,11 @@ a2a_app = A2AFastAPIApplication(card, request_handler)
 app = FastAPI()
 a2a_app.add_routes_to_app(app)
 
+# Health check endpoint
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "critic-agent"}
+
 if __name__ == "__main__":
     print("[CRITIC AGENT] Starting on port 9992...")
     uvicorn.run(app, host="0.0.0.0", port=9992)
