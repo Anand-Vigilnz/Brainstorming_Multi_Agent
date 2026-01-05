@@ -1,2 +1,0 @@
-"""Critic Agent package."""
-
