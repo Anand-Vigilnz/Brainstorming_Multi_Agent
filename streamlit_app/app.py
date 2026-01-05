@@ -14,7 +14,7 @@ load_dotenv(dotenv_path="../.env")
 
 # Page configuration
 st.set_page_config(
-    page_title="Multi-Agent Brainstorming System",
+    page_title="Product Development System",
     page_icon="💡",
     layout="wide"
 )
@@ -239,7 +239,7 @@ def display_results(result: Dict[str, Any]):
 
 def main():
     """Main Streamlit application."""
-    st.title("🚀 Multi-Agent Product Development System")
+    st.title("🚀Product Development System")
     st.markdown("Build products through AI agents: Architect → Developer → Tester")
     
     # Sidebar for configuration
