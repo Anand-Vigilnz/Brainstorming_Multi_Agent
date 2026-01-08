@@ -49,22 +49,29 @@ else:
 
 
 def send_development_request(user_request: str, host_agent_url: str, architect_agent_url: str = None, 
-                               developer_agent_url: str = None, tester_agent_url: str = None) -> Dict[str, Any]:
+                               developer_agent_url: str = None, tester_agent_url: str = None, api_key: str = None) -> Dict[str, Any]:
     """
     Send a development request to the host agent using REST API.
     """
     async def _send_request():
         try:
-            # Get API key - check both module level and environment
-            api_key = API_KEY or os.getenv("API_KEY")
+            # Get API key - prioritize function parameter, then session state, then module level, then environment
+            resolved_api_key = api_key
+            if not resolved_api_key:
+                if hasattr(st, 'session_state') and hasattr(st.session_state, 'api_key') and st.session_state.api_key:
+                    resolved_api_key = st.session_state.api_key
+                elif API_KEY:
+                    resolved_api_key = API_KEY
+                else:
+                    resolved_api_key = os.getenv("API_KEY")
             
             # Prepare headers with Bearer token if API key is available
             headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
+            if resolved_api_key:
+                headers["Authorization"] = f"Bearer {resolved_api_key}"
             else:
                 # Log warning if API key is missing
-                print("WARNING: API_KEY not found in environment variables")
+                print("WARNING: API_KEY not found in session state, module, or environment variables")
             
             async with httpx.AsyncClient(timeout=300) as http_client:
                 # Prepare request payload with optional agent URLs
@@ -280,19 +287,9 @@ def main():
     with st.sidebar:
         st.header("Configuration")
         
-        # API Key Status
-        if API_KEY:
-            st.success("✅ API Key loaded")
-        else:
-            st.error("❌ API Key not found")
-            st.warning("""
-            **To fix this:**
-            1. Create a `.env` file in the project root directory
-            2. Add: `API_KEY=vgag_live_your_actual_api_key_here`
-            3. Restart the Streamlit app
-            """)
-        
-        st.divider()
+        # Initialize session state for API key if not present
+        if "api_key" not in st.session_state:
+            st.session_state.api_key = API_KEY or ""
         
         # Initialize session state for URLs if not present
         if "host_agent_url" not in st.session_state:
@@ -304,7 +301,26 @@ def main():
         if "tester_agent_url" not in st.session_state:
             st.session_state.tester_agent_url = DEFAULT_TESTER_AGENT_URL
         
+        # API Key Input
+        st.subheader("API Configuration")
+        st.session_state.api_key = st.text_input(
+            "API Key",
+            value=st.session_state.api_key,
+            type="password",
+            help="Enter your API key for Bearer token authentication",
+            key="api_key_input"
+        )
+        
+        # API Key Status
+        if st.session_state.api_key:
+            st.success("✅ API Key configured")
+        else:
+            st.warning("⚠️ API Key not set. You can enter it above or set it in `.env` file.")
+        
+        st.divider()
+        
         # Host Agent URL
+        st.subheader("Agent URLs")
         st.session_state.host_agent_url = st.text_input(
             "Host Agent URL",
             value=st.session_state.host_agent_url,
@@ -364,13 +380,14 @@ def main():
         
         # Show progress
         with st.spinner("Processing your request..."):
-            # Send request to host agent with configured URLs
+            # Send request to host agent with configured URLs and API key
             result = send_development_request(
                 user_request.strip(),
                 st.session_state.host_agent_url,
                 st.session_state.architect_agent_url,
                 st.session_state.developer_agent_url,
-                st.session_state.tester_agent_url
+                st.session_state.tester_agent_url,
+                st.session_state.api_key if st.session_state.api_key else None
             )
         
         # Display results
