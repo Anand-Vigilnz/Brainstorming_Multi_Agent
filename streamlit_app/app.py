@@ -10,7 +10,20 @@ from dotenv import load_dotenv
 import httpx
 
 
-load_dotenv(dotenv_path="../.env")
+# Load .env file - try multiple possible locations
+project_root = Path(__file__).parent.parent
+env_paths = [
+    project_root / ".env",
+    Path("../.env"),
+    Path(".env"),
+]
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=True)
+        break
+else:
+    # Try loading from current directory as fallback
+    load_dotenv(override=True)
 
 # Page configuration
 st.set_page_config(
@@ -24,6 +37,15 @@ DEFAULT_HOST_AGENT_URL = os.getenv("HOST_AGENT_URL", "https://devagentguard.vigi
 DEFAULT_ARCHITECT_AGENT_URL = os.getenv("ARCHITECT_AGENT_URL", "http://localhost:9991")
 DEFAULT_DEVELOPER_AGENT_URL = os.getenv("DEVELOPER_AGENT_URL", "http://localhost:9992")
 DEFAULT_TESTER_AGENT_URL = os.getenv("TESTER_AGENT_URL", "http://localhost:9993")
+API_KEY = os.getenv("API_KEY")
+
+# Debug: Log API key status (without exposing the key)
+if API_KEY:
+    st.session_state.api_key_loaded = True
+    # Only show first few chars for debugging
+    api_key_preview = API_KEY[:10] + "..." if len(API_KEY) > 10 else "***"
+else:
+    st.session_state.api_key_loaded = False
 
 
 def send_development_request(user_request: str, host_agent_url: str, architect_agent_url: str = None, 
@@ -33,6 +55,17 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
     """
     async def _send_request():
         try:
+            # Get API key - check both module level and environment
+            api_key = API_KEY or os.getenv("API_KEY")
+            
+            # Prepare headers with Bearer token if API key is available
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            else:
+                # Log warning if API key is missing
+                print("WARNING: API_KEY not found in environment variables")
+            
             async with httpx.AsyncClient(timeout=300) as http_client:
                 # Prepare request payload with optional agent URLs
                 payload = {"user_request": user_request}
@@ -47,7 +80,7 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                 create_response = await http_client.post(
                     f"{host_agent_url}/api/develop",
                     json=payload,
-                    headers={"Content-Type": "application/json"}
+                    headers=headers
                 )
                 create_response.raise_for_status()
                 create_data = create_response.json()
@@ -65,7 +98,8 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                     
                     # Get task status
                     status_response = await http_client.get(
-                        f"{host_agent_url}/api/develop/{task_id}"
+                        f"{host_agent_url}/api/develop/{task_id}",
+                        headers=headers
                     )
                     status_response.raise_for_status()
                     status_data = status_response.json()
@@ -245,6 +279,20 @@ def main():
     # Sidebar for configuration
     with st.sidebar:
         st.header("Configuration")
+        
+        # API Key Status
+        if API_KEY:
+            st.success("✅ API Key loaded")
+        else:
+            st.error("❌ API Key not found")
+            st.warning("""
+            **To fix this:**
+            1. Create a `.env` file in the project root directory
+            2. Add: `API_KEY=vgag_live_your_actual_api_key_here`
+            3. Restart the Streamlit app
+            """)
+        
+        st.divider()
         
         # Initialize session state for URLs if not present
         if "host_agent_url" not in st.session_state:

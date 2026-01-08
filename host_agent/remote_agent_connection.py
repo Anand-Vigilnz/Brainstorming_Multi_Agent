@@ -43,6 +43,14 @@ class RemoteAgentConnection:
             headers = {
                 "User-Agent": "Product-Development-Host-Agent/1.0",
             }
+            # Add Bearer token if API key is available
+            api_key = os.getenv("API_KEY")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+                self.logger.log_activity(f"API key loaded (length: {len(api_key)})")
+            else:
+                self.logger.log_error("API_KEY not found in environment variables", ValueError("API_KEY missing"))
+            
             self._httpx_client = httpx.AsyncClient(
                 timeout=120.0, 
                 verify=False,

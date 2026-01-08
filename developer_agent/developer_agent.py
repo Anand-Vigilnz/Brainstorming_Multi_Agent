@@ -4,7 +4,7 @@ import json
 import asyncio
 import re
 from pathlib import Path
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 
 project_root = Path(__file__).parent.parent
@@ -13,13 +13,13 @@ load_dotenv(dotenv_path=env_path)
 
 class DeveloperAgent:
     def __init__(self):
-        self.api_key = os.getenv("GROQ_API_KEY")
+        self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
-            print("Warning: GROQ_API_KEY not found")
-        # Use llama-3.1-8b-instant for code generation
-        self.llm = ChatGroq(
-            groq_api_key=self.api_key,
-            model_name="llama-3.1-8b-instant",
+            print("Warning: OPENAI_API_KEY not found")
+        # Use gpt-4o-mini for code generation
+        self.llm = ChatOpenAI(
+            openai_api_key=self.api_key,
+            model="gpt-4o-mini",
             temperature=0.3
         )
 
@@ -128,7 +128,7 @@ class DeveloperAgent:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # LangChain Groq is synchronous, so we run it in executor
+                # LangChain OpenAI is synchronous, so we run it in executor
                 response = await asyncio.to_thread(self.llm.invoke, prompt)
                 # Extract text from LangChain message
                 text = response.content if hasattr(response, 'content') else str(response)

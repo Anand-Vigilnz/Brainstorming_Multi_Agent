@@ -11,8 +11,8 @@ services:
     environment:
       - ARCHITECT_AGENT_PORT=9991
       - ARCHITECT_AGENT_NAME=Architect Agent
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
       - ./logs:/app/logs
       - ./architect_agent/.env:/app/architect_agent/.env:ro
@@ -38,8 +38,8 @@ services:
     environment:
       - DEVELOPER_AGENT_PORT=9992
       - DEVELOPER_AGENT_NAME=Developer Agent
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
       - ./logs:/app/logs
       - ./developer_agent/.env:/app/developer_agent/.env:ro
@@ -65,8 +65,8 @@ services:
     environment:
       - TESTER_AGENT_PORT=9993
       - TESTER_AGENT_NAME=Tester Agent
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
       - ./logs:/app/logs
       - ./tester_agent/.env:/app/tester_agent/.env:ro
