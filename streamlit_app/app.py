@@ -74,7 +74,7 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                 print("WARNING: API_KEY not found in session state, module, or environment variables")
             
             async with httpx.AsyncClient(timeout=300) as http_client:
-                # Prepare request payload with optional agent URLs
+                # Prepare request payload with optional agent URLs and API key
                 payload = {"user_request": user_request}
                 if architect_agent_url:
                     payload["architect_agent_url"] = architect_agent_url
@@ -82,6 +82,8 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                     payload["developer_agent_url"] = developer_agent_url
                 if tester_agent_url:
                     payload["tester_agent_url"] = tester_agent_url
+                if resolved_api_key:  # Add API key to payload so host agent can use it for remote connections
+                    payload["api_key"] = resolved_api_key
                 
                 # Step 1: Create task by sending POST request
                 create_response = await http_client.post(

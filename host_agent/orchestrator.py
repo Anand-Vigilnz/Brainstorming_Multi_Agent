@@ -14,8 +14,61 @@ class Orchestrator:
         self.logger = AgentLogger("host_agent")
         self._agents_connected = False
         self._last_agent_urls = None  # Track last used URLs to avoid unnecessary reconnections
+        self._failed_agents = set()  # Track agents that have failed (circuit breaker pattern)
     
-    async def _ensure_connected(self, agent_urls: Dict[str, str] = None):
+    def _is_403_error(self, result: Dict[str, Any]) -> bool:
+        """Check if result indicates a 403 Forbidden error."""
+        if isinstance(result, dict):
+            # Check for explicit status_code
+            if result.get("status_code") == 403:
+                return True
+            # Check for non_retryable flag (set by our error handler)
+            if result.get("non_retryable") and "403" in str(result.get("error", "")):
+                return True
+            # Check error message for 403/Forbidden
+            error_msg = str(result.get("error", "")).lower()
+            if "403" in error_msg or "forbidden" in error_msg:
+                return True
+        return False
+    
+    def _handle_agent_error(self, agent_name: str, result: Dict[str, Any], workflow_id: str) -> Dict[str, Any]:
+        """Handle agent errors, especially 403 Forbidden errors."""
+        error = result.get("error", "Unknown error")
+        
+        # Check for 403 Forbidden error
+        if self._is_403_error(result):
+            self._failed_agents.add(agent_name)
+            error_msg = (
+                f"{agent_name} agent returned 403 Forbidden. "
+                "This indicates an authentication/authorization failure. "
+                "Please check: 1) API key is valid (AGENTGUARD_API_KEY or API_KEY), "
+                "2) API key matches the workflow configuration, "
+                "3) AgentGuard proxy is properly configured."
+            )
+            self.logger.log_error(f"{agent_name} agent authentication failed", ValueError(error_msg), {
+                "workflow_id": workflow_id,
+                "agent": agent_name,
+                "status_code": 403,
+                "non_retryable": True
+            })
+            return {
+                "status": "error",
+                "message": error_msg,
+                "agent": agent_name,
+                "status_code": 403,
+                "workflow_id": workflow_id,
+                "non_retryable": True
+            }
+        
+        # For other errors, return standard error response
+        return {
+            "status": "error",
+            "message": error,
+            "agent": agent_name,
+            "workflow_id": workflow_id
+        }
+    
+    async def _ensure_connected(self, agent_urls: Dict[str, str] = None, api_key: str = None):
         """Ensure agents are connected (lazy initialization)."""
         # Convert agent_urls to a comparable format (remove None values for comparison)
         normalized_urls = {k: v for k, v in (agent_urls or {}).items() if v} if agent_urls else None
@@ -36,7 +89,7 @@ class Orchestrator:
                 self.logger.log_activity("Connecting/reconnecting to remote agents with provided URLs")
             else:
                 self.logger.log_activity("Connecting to remote agents (lazy initialization)")
-            await self.remote_connection.discover_all_agents(agent_urls=agent_urls)
+            await self.remote_connection.discover_all_agents(agent_urls=agent_urls, api_key=api_key)
             self._agents_connected = True
             # Store the URLs we used (normalized to avoid reconnecting when URLs are the same)
             self._last_agent_urls = normalized_urls
@@ -44,7 +97,7 @@ class Orchestrator:
             # URLs are same as before, reuse existing connections
             self.logger.log_activity("Reusing existing agent connections (URLs unchanged)")
     
-    async def process_development_request(self, user_request: str, agent_urls: Dict[str, str] = None) -> Dict[str, Any]:
+    async def process_development_request(self, user_request: str, agent_urls: Dict[str, str] = None, api_key: str = None) -> Dict[str, Any]:
         """
         Process a product development request through the multi-agent workflow.
         
@@ -56,6 +109,7 @@ class Orchestrator:
         Args:
             user_request: The project request/idea (e.g., "build a simple calculator application")
             agent_urls: Optional dictionary with keys: architect_agent_url, developer_agent_url, tester_agent_url
+            api_key: Optional API key from UI request. If not provided, falls back to environment variable.
             
         Returns:
             Dictionary containing architectural plan, code, and test results
@@ -67,8 +121,8 @@ class Orchestrator:
             "agent_urls_provided": agent_urls is not None
         })
         
-        # Ensure agents are connected (lazy initialization) with optional URLs
-        await self._ensure_connected(agent_urls=agent_urls)
+        # Ensure agents are connected (lazy initialization) with optional URLs and API key
+        await self._ensure_connected(agent_urls=agent_urls, api_key=api_key)
         
         try:
             # Step 1: Create architectural plan
@@ -77,6 +131,10 @@ class Orchestrator:
                 "user_request": user_request
             })
             plan_result = await self.remote_connection.send_task_to_architect_agent(user_request)
+            
+            # Check for 403 errors first (non-retryable authentication failures)
+            if self._is_403_error(plan_result):
+                return self._handle_agent_error("Architect", plan_result, workflow_id)
             
             # Handle potential 'output' wrapper or direct response
             if "output" in plan_result:
@@ -126,6 +184,12 @@ class Orchestrator:
             
             code_result = await self.remote_connection.send_task_to_developer_agent(plan)
             
+            # Check for 403 errors first (non-retryable authentication failures)
+            if self._is_403_error(code_result):
+                error_response = self._handle_agent_error("Developer", code_result, workflow_id)
+                error_response["plan"] = plan  # Include plan in response for context
+                return error_response
+            
             # Check for errors in code generation response
             if "output" in code_result:
                 output_data = code_result["output"]
@@ -172,6 +236,13 @@ class Orchestrator:
             await asyncio.sleep(1.5)
             
             test_result = await self.remote_connection.send_task_to_tester_agent(code)
+            
+            # Check for 403 errors first (non-retryable authentication failures)
+            if self._is_403_error(test_result):
+                error_response = self._handle_agent_error("Tester", test_result, workflow_id)
+                error_response["plan"] = plan  # Include plan and code in response for context
+                error_response["code"] = code
+                return error_response
             
             # Check for errors in test response
             if "output" in test_result:

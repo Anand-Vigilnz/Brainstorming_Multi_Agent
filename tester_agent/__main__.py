@@ -36,6 +36,7 @@ card = AgentCard(
     description="Tests code implementations and provides test results",
     instructions="I am a Tester. Send me code and I will test it and provide test results.",
     url=os.getenv("TESTER_AGENT_URL", "https://demotestagent.vigilnz.com"),
+    # url="http://localhost:9993",
     version="0.0.1",
     capabilities={},
     skills=[],

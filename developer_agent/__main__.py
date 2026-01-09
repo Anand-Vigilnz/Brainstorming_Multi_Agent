@@ -35,6 +35,7 @@ card = AgentCard(
     description="Builds code implementation based on architectural plans",
     instructions="I am a Developer. Send me an architectural plan and I will build the code implementation.",
     url=os.getenv("DEVELOPER_AGENT_URL", "https://demodevagent.vigilnz.com"),
+    # url="http://localhost:9992",
     version="0.0.1",
     capabilities={},
     skills=[],

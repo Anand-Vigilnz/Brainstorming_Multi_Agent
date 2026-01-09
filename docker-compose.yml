@@ -11,7 +11,7 @@ services:
     environment:
       - ARCHITECT_AGENT_PORT=9991
       - ARCHITECT_AGENT_NAME=Architect Agent
-      - ARCHITECT_AGENT_URL=http://architect-agent:9991
+      - ARCHITECT_AGENT_URL=${ARCHITECT_AGENT_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
@@ -39,7 +39,7 @@ services:
     environment:
       - DEVELOPER_AGENT_PORT=9992
       - DEVELOPER_AGENT_NAME=Developer Agent
-      - DEVELOPER_AGENT_URL=http://developer-agent:9992
+      - DEVELOPER_AGENT_URL=${DEVELOPER_AGENT_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
@@ -67,7 +67,7 @@ services:
     environment:
       - TESTER_AGENT_PORT=9993
       - TESTER_AGENT_NAME=Tester Agent
-      - TESTER_AGENT_URL=http://tester-agent:9993
+      - TESTER_AGENT_URL=${TESTER_AGENT_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
@@ -95,9 +95,9 @@ services:
     environment:
       - HOST_AGENT_PORT=9999
       - HOST_AGENT_NAME=Product Development Orchestrator
-      - ARCHITECT_AGENT_URL=http://architect-agent:9991
-      - DEVELOPER_AGENT_URL=http://developer-agent:9992
-      - TESTER_AGENT_URL=http://tester-agent:9993
+      - ARCHITECT_AGENT_URL=${ARCHITECT_AGENT_URL}
+      - DEVELOPER_AGENT_URL=${DEVELOPER_AGENT_URL}
+      - TESTER_AGENT_URL=${TESTER_AGENT_URL}
     volumes:
       - ./logs:/app/logs
       - ./host_agent/.env:/app/host_agent/.env:ro

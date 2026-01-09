@@ -35,6 +35,7 @@ card = AgentCard(
     description="Creates architectural plans for project requests",
     instructions="I am an Architect. Send me a project request/idea and I will create a detailed architectural plan for it.",
     url=os.getenv("ARCHITECT_AGENT_URL", "https://demoarchagent.vigilnz.com"),
+    # url="http://localhost:9991",
     version="0.0.1",
     capabilities={},
     skills=[],

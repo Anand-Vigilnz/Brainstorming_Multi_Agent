@@ -37,30 +37,85 @@ class RemoteAgentConnection:
         self.developer_card = None
         self.tester_card = None
         self._httpx_client = None
+        self._current_api_key = None  # Track current API key to avoid unnecessary client recreation
+        self._stored_api_key = None  # Store API key for reuse when recreating clients
 
-    async def _get_httpx_client(self):
-        if self._httpx_client is None:
-            headers = {
-                "User-Agent": "Product-Development-Host-Agent/1.0",
-            }
-            # Add Bearer token if API key is available
-            api_key = os.getenv("API_KEY")
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-                self.logger.log_activity(f"API key loaded (length: {len(api_key)})")
-            else:
-                self.logger.log_error("API_KEY not found in environment variables", ValueError("API_KEY missing"))
+    async def _get_httpx_client(self, api_key: str = None):
+        # Resolve the API key (provided, stored, or from environment)
+        # Priority: provided > stored > environment
+        resolved_api_key = api_key or self._stored_api_key or os.getenv("AGENTGUARD_API_KEY") or os.getenv("API_KEY")
+        
+        # Check if API key changed - if so, we need to reset agent clients
+        api_key_changed = (self._httpx_client is not None and 
+                          self._current_api_key is not None and 
+                          self._current_api_key != resolved_api_key)
+        
+        # Only recreate client if API key changed or client doesn't exist
+        if self._httpx_client is not None and not api_key_changed and self._current_api_key == resolved_api_key:
+            # Reuse existing client if API key hasn't changed
+            return self._httpx_client
+        
+        # If API key changed, reset agent clients so they'll be recreated with new httpx client
+        if api_key_changed:
+            self.logger.log_activity("API key changed - resetting agent clients")
+            self.architect_client = None
+            self.developer_client = None
+            self.tester_client = None
+            self.architect_card = None
+            self.developer_card = None
+            self.tester_card = None
+        
+        headers = {
+            "User-Agent": "Product-Development-Host-Agent/1.0",
+        }
+        
+        if resolved_api_key:
+            # Support both Authorization Bearer and X-API-Key headers
+            # AgentGuard may prefer X-API-Key header
+            headers["X-API-Key"] = resolved_api_key
+            headers["Authorization"] = f"Bearer {resolved_api_key}"
+            self.logger.log_activity(f"API key loaded (length: {len(resolved_api_key)})")
+        else:
+            self.logger.log_error("API key not found in request or environment variables (AGENTGUARD_API_KEY or API_KEY)", ValueError("API_KEY missing"))
+        
+        # Store old client reference before creating new one
+        old_client = self._httpx_client
+        
+        # Create new client with updated API key
+        self._httpx_client = httpx.AsyncClient(
+            timeout=300.0, 
+            verify=False,
+            headers=headers
+        )
+        self._current_api_key = resolved_api_key  # Track the API key we used
+        # Store the resolved API key for future use if not already stored
+        if resolved_api_key and not self._stored_api_key:
+            self._stored_api_key = resolved_api_key
+        
+        # Close old client asynchronously after a delay to allow any in-flight requests to complete
+        # This prevents "client has been closed" errors
+        if old_client is not None:
+            # Schedule cleanup in background - don't await to avoid blocking
+            async def cleanup_old_client():
+                try:
+                    # Wait longer to ensure all in-flight requests complete
+                    await asyncio.sleep(1.0)  # 1 second delay to let in-flight requests finish
+                    await old_client.aclose()
+                    self.logger.log_activity("Old httpx client closed successfully")
+                except Exception as e:
+                    # Don't log as error if client is already closed (this is expected)
+                    error_msg = str(e).lower()
+                    if "closed" not in error_msg and "cannot send" not in error_msg:
+                        self.logger.log_error("Error closing old httpx client during cleanup", e)
             
-            self._httpx_client = httpx.AsyncClient(
-                timeout=300.0, 
-                verify=False,
-                headers=headers
-            )
+            # Create task but don't await - let it run in background
+            asyncio.create_task(cleanup_old_client())
+        
         return self._httpx_client
 
-    async def _connect_to_agent(self, base_url: str):
+    async def _connect_to_agent(self, base_url: str, api_key: str = None):
         """Connect to agent and return (client, card) tuple."""
-        httpx_client = await self._get_httpx_client()
+        httpx_client = await self._get_httpx_client(api_key=api_key)
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
         agent_card = await resolver.get_agent_card()
         
@@ -71,7 +126,7 @@ class RemoteAgentConnection:
         
         return client, agent_card
 
-    async def discover_all_agents(self, agent_urls: Dict[str, str] = None):
+    async def discover_all_agents(self, agent_urls: Dict[str, str] = None, api_key: str = None):
         """
         Connects to all required remote agents.
         This is a lazy initialization step.
@@ -79,14 +134,35 @@ class RemoteAgentConnection:
         Args:
             agent_urls: Optional dictionary with keys: architect_agent_url, developer_agent_url, tester_agent_url
                        If provided, these URLs will be used instead of environment variables.
+            api_key: Optional API key from UI request. If not provided, falls back to stored key or environment variable.
         """
+        # Store the API key for later use when recreating clients
+        if api_key:
+            self._stored_api_key = api_key
+            self.logger.log_activity(f"Storing API key for future use (length: {len(api_key)})")
+        elif not self._stored_api_key:
+            # Only fallback to env if we don't have a stored key
+            self._stored_api_key = os.getenv("AGENTGUARD_API_KEY") or os.getenv("API_KEY")
+            if self._stored_api_key:
+                self.logger.log_activity(f"Using API key from environment (length: {len(self._stored_api_key)})")
+        
         self.logger.log_activity("Attempting to connect to remote agents...")
         
         # Get agent URLs from provided dict or environment variables
+        # Check if keys exist in agent_urls first, only fallback to env if key doesn't exist
         if agent_urls:
-            architect_agent_url = agent_urls.get("architect_agent_url") or os.getenv("ARCHITECT_AGENT_URL")
-            developer_agent_url = agent_urls.get("developer_agent_url") or os.getenv("DEVELOPER_AGENT_URL")
-            tester_agent_url = agent_urls.get("tester_agent_url") or os.getenv("TESTER_AGENT_URL")
+            architect_agent_url = agent_urls.get("architect_agent_url")
+            if architect_agent_url is None:
+                architect_agent_url = os.getenv("ARCHITECT_AGENT_URL")
+            
+            developer_agent_url = agent_urls.get("developer_agent_url")
+            if developer_agent_url is None:
+                developer_agent_url = os.getenv("DEVELOPER_AGENT_URL")
+            
+            tester_agent_url = agent_urls.get("tester_agent_url")
+            if tester_agent_url is None:
+                tester_agent_url = os.getenv("TESTER_AGENT_URL")
+            
             self.logger.log_activity("Using agent URLs from request (with env fallback)")
         else:
             architect_agent_url = os.getenv("ARCHITECT_AGENT_URL")
@@ -101,7 +177,7 @@ class RemoteAgentConnection:
         # Connect to Architect Agent
         if architect_agent_url:
             try:
-                self.architect_client, self.architect_card = await self._connect_to_agent(architect_agent_url)
+                self.architect_client, self.architect_card = await self._connect_to_agent(architect_agent_url, api_key=api_key)
                 self.logger.log_activity(f"Connected to Architect Agent at {architect_agent_url}")
             except Exception as e:
                 self.logger.log_error("Failed to connect to Architect Agent", e)
@@ -111,7 +187,7 @@ class RemoteAgentConnection:
         # Connect to Developer Agent
         if developer_agent_url:
             try:
-                self.developer_client, self.developer_card = await self._connect_to_agent(developer_agent_url)
+                self.developer_client, self.developer_card = await self._connect_to_agent(developer_agent_url, api_key=api_key)
                 self.logger.log_activity(f"Connected to Developer Agent at {developer_agent_url}")
             except Exception as e:
                 self.logger.log_error("Failed to connect to Developer Agent", e)
@@ -121,7 +197,7 @@ class RemoteAgentConnection:
         # Connect to Tester Agent
         if tester_agent_url:
             try:
-                self.tester_client, self.tester_card = await self._connect_to_agent(tester_agent_url)
+                self.tester_client, self.tester_card = await self._connect_to_agent(tester_agent_url, api_key=api_key)
                 self.logger.log_activity(f"Connected to Tester Agent at {tester_agent_url}")
             except Exception as e:
                 self.logger.log_error("Failed to connect to Tester Agent", e)
@@ -150,7 +226,7 @@ class RemoteAgentConnection:
         
         self.logger.log_activity(f"Sending request with payload: {input_data}")
         
-        # Retry logic for 403 errors (rate limiting) and other transient errors
+        # Retry logic for transient errors (NOT 403 - authentication failures are non-retryable)
         max_retries = 3
         retry_delay = 2  # Start with 2 seconds
         
@@ -299,10 +375,82 @@ class RemoteAgentConnection:
                 })
                 return {"error": "No result artifacts collected"}
                 
+            except httpx.HTTPStatusError as e:
+                # Check HTTP status code directly
+                status_code = None
+                if hasattr(e, 'response') and e.response is not None:
+                    status_code = e.response.status_code
+                
+                # 403 Forbidden is a non-retryable authentication/authorization error
+                if status_code == 403:
+                    error_msg = "403 Forbidden: API key may be invalid or workflow mismatch. Check API key and workflow configuration."
+                    self.logger.log_error(error_msg, e, {
+                        "status_code": 403,
+                        "attempt": attempt + 1,
+                        "non_retryable": True
+                    })
+                    # Don't retry - this is a configuration issue
+                    return {"error": error_msg, "status_code": 403, "non_retryable": True}
+                
+                # 503 Service Unavailable is retryable
+                is_retryable = (status_code == 503 or status_code is None) and attempt < max_retries - 1
+                
+                if is_retryable:
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
+                    self.logger.log_activity(
+                        f"Received HTTP {status_code} error (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying after {wait_time} seconds..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # For other HTTP errors or final retry, log and return error
+                    error_msg = f"HTTP {status_code} error: {str(e)}"
+                    self.logger.log_error("HTTP error during request", e, {"status_code": status_code})
+                    return {"error": error_msg, "status_code": status_code}
+                    
+            except httpx.HTTPError as e:
+                # Handle other httpx HTTP errors (network errors, timeouts, etc.)
+                error_str = str(e)
+                # Check if error string contains 403 (for edge cases)
+                if "403" in error_str or "Forbidden" in error_str:
+                    error_msg = "403 Forbidden: API key may be invalid or workflow mismatch. Check API key and workflow configuration."
+                    self.logger.log_error(error_msg, e, {
+                        "error_string": error_str,
+                        "attempt": attempt + 1,
+                        "non_retryable": True
+                    })
+                    return {"error": error_msg, "status_code": 403, "non_retryable": True}
+                
+                # Network errors are retryable
+                is_retryable = attempt < max_retries - 1
+                if is_retryable:
+                    wait_time = retry_delay * (2 ** attempt)
+                    self.logger.log_activity(
+                        f"Received HTTP error: {error_str[:50]}... (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying after {wait_time} seconds..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.log_error("HTTP error during request", e)
+                    return {"error": f"HTTP error: {error_str}"}
+                    
             except Exception as e:
                 error_str = str(e)
-                # Check if it's a 403 error (rate limiting) or 503 error (service unavailable)
-                is_retryable_error = ("403" in error_str or "503" in error_str) and attempt < max_retries - 1
+                # Check if error string contains 403 (for cases where httpx.HTTPStatusError isn't caught)
+                if "403" in error_str or "Forbidden" in error_str:
+                    error_msg = "403 Forbidden: API key may be invalid or workflow mismatch. Check API key and workflow configuration."
+                    self.logger.log_error(error_msg, e, {
+                        "error_string": error_str,
+                        "attempt": attempt + 1,
+                        "non_retryable": True
+                    })
+                    # Don't retry - this is a configuration issue
+                    return {"error": error_msg, "status_code": 403, "non_retryable": True}
+                
+                # Check if it's a 503 error (service unavailable) - retryable
+                is_retryable_error = ("503" in error_str or "Service Unavailable" in error_str) and attempt < max_retries - 1
                 
                 if is_retryable_error:
                     wait_time = retry_delay * (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
@@ -322,7 +470,8 @@ class RemoteAgentConnection:
 
     async def send_task_to_architect_agent(self, user_request: str) -> Dict[str, Any]:
         if not self.architect_client:
-            await self.discover_all_agents()
+            # Use stored API key when recreating client
+            await self.discover_all_agents(api_key=self._stored_api_key)
         if not self.architect_client:
              raise RuntimeError("Architect Agent is not available")
         
@@ -332,7 +481,8 @@ class RemoteAgentConnection:
 
     async def send_task_to_developer_agent(self, architecture_plan: Dict[str, Any]) -> Dict[str, Any]:
         if not self.developer_client:
-            await self.discover_all_agents()
+            # Use stored API key when recreating client
+            await self.discover_all_agents(api_key=self._stored_api_key)
         if not self.developer_client:
              raise RuntimeError("Developer Agent is not available")
         
@@ -342,7 +492,8 @@ class RemoteAgentConnection:
 
     async def send_task_to_tester_agent(self, code_data: Dict[str, Any]) -> Dict[str, Any]:
         if not self.tester_client:
-            await self.discover_all_agents()
+            # Use stored API key when recreating client
+            await self.discover_all_agents(api_key=self._stored_api_key)
         if not self.tester_client:
              raise RuntimeError("Tester Agent is not available")
         

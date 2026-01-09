@@ -37,6 +37,7 @@ card = AgentCard(
     description="Orchestrates the product development workflow",
     instructions="I am a Product Owner/Orchestrator. Send me a project request and I will coordinate the development workflow through Architect, Developer, and Tester agents.",
     url=os.getenv("HOST_AGENT_URL", "https://demohostagent.vigilnz.com"),
+    # url="http://localhost:9999",
     version="0.0.1",
     capabilities={},
     skills=[],
@@ -81,12 +82,13 @@ async def create_development_task(request: Dict[str, Any]):
     if not user_request:
         raise HTTPException(status_code=400, detail="User request or project idea is required")
     
-    # Extract optional agent URLs from request
+    # Extract optional agent URLs and API key from request
     agent_urls = {
         "architect_agent_url": request.get("architect_agent_url"),
         "developer_agent_url": request.get("developer_agent_url"),
         "tester_agent_url": request.get("tester_agent_url")
     }
+    api_key = request.get("api_key")  # Extract API key from request
     
     task_id = str(uuid4())
     
@@ -99,8 +101,8 @@ async def create_development_task(request: Dict[str, Any]):
         "error": None
     }
     
-    # Start processing asynchronously with agent URLs
-    asyncio.create_task(process_development_task(task_id, user_request, agent_urls))
+    # Start processing asynchronously with agent URLs and API key
+    asyncio.create_task(process_development_task(task_id, user_request, agent_urls, api_key))
     
     return JSONResponse({
         "task_id": task_id,
@@ -128,14 +130,14 @@ async def get_development_task(task_id: str):
     return JSONResponse(response)
 
 
-async def process_development_task(task_id: str, user_request: str, agent_urls: Dict[str, str] = None):
+async def process_development_task(task_id: str, user_request: str, agent_urls: Dict[str, str] = None, api_key: str = None):
     """Process the development task using the orchestrator."""
     try:
         # Update status to running
         rest_task_storage[task_id]["status"] = "running"
         
-        # Process using orchestrator with optional agent URLs
-        result = await orchestrator.process_development_request(user_request, agent_urls=agent_urls)
+        # Process using orchestrator with optional agent URLs and API key
+        result = await orchestrator.process_development_request(user_request, agent_urls=agent_urls, api_key=api_key)
         
         # Store result
         rest_task_storage[task_id]["status"] = "completed"
