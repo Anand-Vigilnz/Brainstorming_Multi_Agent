@@ -14,6 +14,7 @@ from a2a.types import (
     SendMessageRequest,
     GetTaskRequest,
     TaskQueryParams,
+    AgentCard,
 )
 from utils.logger import AgentLogger
 
@@ -39,7 +40,6 @@ class RemoteAgentConnection:
 
     async def _get_httpx_client(self):
         if self._httpx_client is None:
-            # Add headers to help with proxy compatibility
             headers = {
                 "User-Agent": "Product-Development-Host-Agent/1.0",
             }
@@ -52,7 +52,7 @@ class RemoteAgentConnection:
                 self.logger.log_error("API_KEY not found in environment variables", ValueError("API_KEY missing"))
             
             self._httpx_client = httpx.AsyncClient(
-                timeout=120.0, 
+                timeout=300.0, 
                 verify=False,
                 headers=headers
             )
@@ -62,21 +62,14 @@ class RemoteAgentConnection:
         """Connect to agent and return (client, card) tuple."""
         httpx_client = await self._get_httpx_client()
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
-        card = await resolver.get_agent_card()
+        agent_card = await resolver.get_agent_card()
         
-        # Override the card's URL with the base_url (proxy URL)
-        # The agent card may contain an internal URL (e.g., http://localhost:3002/agent/remote1),
-        # but we need to use the proxy URL (e.g., https://devagentguard.vigilnz.com/agent/remote1)
-        # to connect from the Host Agent
-        if hasattr(card, 'url') and card.url != base_url:
-            self.logger.log_activity(
-                f"Overriding agent card URL from '{card.url}' to '{base_url}' "
-                "(using proxy URL instead of internal URL)"
-            )
-            card.url = base_url
+        # Create client using the discovered agent card from A2A protocol
+        client = A2AClient(httpx_client=httpx_client, agent_card=agent_card)
         
-        client = A2AClient(httpx_client=httpx_client, agent_card=card)
-        return client, card
+        self.logger.log_activity(f"Connected to agent at {base_url}")
+        
+        return client, agent_card
 
     async def discover_all_agents(self, agent_urls: Dict[str, str] = None):
         """
@@ -203,10 +196,10 @@ class RemoteAgentConnection:
                 # 2. Poll for completion if not already completed
                 if not final_task:
                     import time
-                    end_time = time.time() + 60
+                    end_time = 300
                     
                     while time.time() < end_time:
-                        await asyncio.sleep(1)  # Reduced to 1 second for faster response
+                        await asyncio.sleep(5)  # Reduced to 1 second for faster response
                         
                         # Retrieve latest task state
                         try:
@@ -333,6 +326,8 @@ class RemoteAgentConnection:
         if not self.architect_client:
              raise RuntimeError("Architect Agent is not available")
         
+        self.logger.log_activity("Sending task to Architect Agent")
+        
         return await self._send_and_collect_response(self.architect_client, {"user_request": user_request})
 
     async def send_task_to_developer_agent(self, architecture_plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -341,6 +336,8 @@ class RemoteAgentConnection:
         if not self.developer_client:
              raise RuntimeError("Developer Agent is not available")
         
+        self.logger.log_activity("Sending task to Developer Agent")
+        
         return await self._send_and_collect_response(self.developer_client, {"architecture_plan": architecture_plan})
 
     async def send_task_to_tester_agent(self, code_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -348,5 +345,7 @@ class RemoteAgentConnection:
             await self.discover_all_agents()
         if not self.tester_client:
              raise RuntimeError("Tester Agent is not available")
+        
+        self.logger.log_activity("Sending task to Tester Agent")
         
         return await self._send_and_collect_response(self.tester_client, {"code": code_data})

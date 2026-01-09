@@ -98,7 +98,7 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                 
                 # Step 2: Poll for task completion
                 max_polls = 120  # Poll for up to 2 minutes (120 * 1 second)
-                poll_interval = 1  # Poll every 1 second
+                poll_interval = 10  # Poll every 5 second
                 
                 for poll_count in range(max_polls):
                     await asyncio.sleep(poll_interval)
