@@ -1,4 +1,6 @@
-
+import os
+from dotenv import load_dotenv
+from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from a2a.types import AgentCard
@@ -10,6 +12,21 @@ from a2a.server.events import InMemoryQueueManager
 from tester_agent.tester_agent import TesterAgent
 from utils.simple_executor import SimpleAgentExecutor
 
+# Load .env file - try multiple possible locations
+project_root = Path(__file__).parent.parent
+env_paths = [
+    project_root / ".env",
+    Path("../.env"),
+    Path(".env"),
+]
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=True)
+        break
+else:
+    # Try loading from current directory as fallback
+    load_dotenv(override=True)
+
 # Logic
 agent_logic = TesterAgent()
 
@@ -18,7 +35,7 @@ card = AgentCard(
     name="TesterAgent",
     description="Tests code implementations and provides test results",
     instructions="I am a Tester. Send me code and I will test it and provide test results.",
-    url="http://localhost:9993",
+    url=os.getenv("TESTER_AGENT_URL", "http://localhost:9993"),
     version="0.0.1",
     capabilities={},
     skills=[],

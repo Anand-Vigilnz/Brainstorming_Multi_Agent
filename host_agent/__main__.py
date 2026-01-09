@@ -1,7 +1,9 @@
-
+import os
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+from pathlib import Path
 from a2a.types import AgentCard
 from a2a.server.request_handlers.default_request_handler import DefaultRequestHandler
 from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
@@ -14,12 +16,27 @@ from uuid import uuid4
 from host_agent.orchestrator import Orchestrator
 from host_agent.agent_executor import HostAgentExecutor
 
+# Load .env file - try multiple possible locations
+project_root = Path(__file__).parent.parent
+env_paths = [
+    project_root / ".env",
+    Path("../.env"),
+    Path(".env"),
+]
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=True)
+        break
+else:
+    # Try loading from current directory as fallback
+    load_dotenv(override=True)
+
 # Setup Agent Card
 card = AgentCard(
     name="ProductOwnerHost",
     description="Orchestrates the product development workflow",
     instructions="I am a Product Owner/Orchestrator. Send me a project request and I will coordinate the development workflow through Architect, Developer, and Tester agents.",
-    url="http://localhost:9999",
+    url=os.getenv("HOST_AGENT_URL", "http://localhost:9999"),
     version="0.0.1",
     capabilities={},
     skills=[],

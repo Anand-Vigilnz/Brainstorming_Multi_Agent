@@ -13,7 +13,6 @@ env/
 ENV/
 
 # Environment files (we'll mount them as volumes)
-*.env
 !example.env
 
 # Logs

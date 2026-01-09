@@ -1,4 +1,4 @@
-
+import os
 import uvicorn
 from fastapi import FastAPI
 from a2a.types import AgentCard
@@ -6,19 +6,35 @@ from a2a.server.request_handlers.default_request_handler import DefaultRequestHa
 from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.events import InMemoryQueueManager
-
+from dotenv import load_dotenv
+from pathlib import Path
 from architect_agent.architect_agent import ArchitectAgent
 from utils.simple_executor import SimpleAgentExecutor
 
 # Logic
 agent_logic = ArchitectAgent()
 
+# Load .env file - try multiple possible locations
+project_root = Path(__file__).parent.parent
+env_paths = [
+    project_root / ".env",
+    Path("../.env"),
+    Path(".env"),
+]
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=True)
+        break
+else:
+    # Try loading from current directory as fallback
+    load_dotenv(override=True)
+
 # Card
 card = AgentCard(
     name="ArchitectAgent",
     description="Creates architectural plans for project requests",
     instructions="I am an Architect. Send me a project request/idea and I will create a detailed architectural plan for it.",
-    url="http://localhost:9991",
+    url=os.getenv("ARCHITECT_AGENT_URL", "http://localhost:9991"),
     version="0.0.1",
     capabilities={},
     skills=[],
