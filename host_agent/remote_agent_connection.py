@@ -43,7 +43,7 @@ class RemoteAgentConnection:
     async def _get_httpx_client(self, api_key: str = None):
         # Resolve the API key (provided, stored, or from environment)
         # Priority: provided > stored > environment
-        resolved_api_key = api_key or self._stored_api_key or os.getenv("AGENTGUARD_API_KEY") or os.getenv("API_KEY")
+        resolved_api_key = api_key or os.getenv("API_KEY")
         
         # Check if API key changed - if so, we need to reset agent clients
         api_key_changed = (self._httpx_client is not None and 
@@ -76,7 +76,7 @@ class RemoteAgentConnection:
             headers["Authorization"] = f"Bearer {resolved_api_key}"
             self.logger.log_activity(f"API key loaded (length: {len(resolved_api_key)})")
         else:
-            self.logger.log_error("API key not found in request or environment variables (AGENTGUARD_API_KEY or API_KEY)", ValueError("API_KEY missing"))
+            self.logger.log_error("API key not found in request or environment variables (API_KEY)", ValueError("API_KEY missing"))
         
         # Store old client reference before creating new one
         old_client = self._httpx_client
@@ -153,7 +153,7 @@ class RemoteAgentConnection:
             self.logger.log_activity(f"Storing API key for future use (length: {len(api_key)})")
         elif not self._stored_api_key:
             # Only fallback to env if we don't have a stored key
-            self._stored_api_key = os.getenv("AGENTGUARD_API_KEY") or os.getenv("API_KEY")
+            self._stored_api_key = os.getenv("API_KEY")
             if self._stored_api_key:
                 self.logger.log_activity(f"Using API key from environment (length: {len(self._stored_api_key)})")
         

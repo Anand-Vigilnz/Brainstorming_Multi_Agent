@@ -41,7 +41,7 @@ class Orchestrator:
             error_msg = (
                 f"{agent_name} agent returned 403 Forbidden. "
                 "This indicates an authentication/authorization failure. "
-                "Please check: 1) API key is valid (AGENTGUARD_API_KEY or API_KEY), "
+                "Please check: 1) API key is valid (API_KEY), "
                 "2) API key matches the workflow configuration, "
                 "3) AgentGuard proxy is properly configured."
             )
