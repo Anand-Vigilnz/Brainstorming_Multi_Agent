@@ -119,10 +119,21 @@ class RemoteAgentConnection:
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
         agent_card = await resolver.get_agent_card()
         
+        # IMPORTANT: Override agent card URL to use proxy URL
+        # This ensures all requests go through the proxy, not directly to agent
+        # Store original URL for logging
+        original_agent_url = agent_card.url if hasattr(agent_card, 'url') else None
+        agent_card.url = base_url  # Use proxy URL instead of agent's actual URL
+        
+        if original_agent_url and original_agent_url != base_url:
+            self.logger.log_activity(
+                f"Overriding agent card URL from {original_agent_url} to proxy URL {base_url}"
+            )
+        
         # Create client using the discovered agent card from A2A protocol
         client = A2AClient(httpx_client=httpx_client, agent_card=agent_card)
         
-        self.logger.log_activity(f"Connected to agent at {base_url}")
+        self.logger.log_activity(f"Connected to agent at {base_url} (proxy mode)")
         
         return client, agent_card
 
