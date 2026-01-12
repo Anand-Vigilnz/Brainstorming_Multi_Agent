@@ -43,7 +43,7 @@ class RemoteAgentConnection:
     async def _get_httpx_client(self, api_key: str = None):
         # Resolve the API key (provided, stored, or from environment)
         # Priority: provided > stored > environment
-        resolved_api_key = api_key or os.getenv("API_KEY")
+        resolved_api_key = api_key or self._stored_api_key or os.getenv("AGENTGUARD_API_KEY") or os.getenv("API_KEY")
         
         # Check if API key changed - if so, we need to reset agent clients
         api_key_changed = (self._httpx_client is not None and 
@@ -57,7 +57,9 @@ class RemoteAgentConnection:
         
         # If API key changed, reset agent clients so they'll be recreated with new httpx client
         if api_key_changed:
-            self.logger.log_activity("API key changed - resetting agent clients")
+            old_key_preview = self._current_api_key[:10] + "..." if self._current_api_key and len(self._current_api_key) > 10 else (self._current_api_key or "None")
+            new_key_preview = resolved_api_key[:10] + "..." if resolved_api_key and len(resolved_api_key) > 10 else (resolved_api_key or "None")
+            self.logger.log_activity(f"API key changed from {old_key_preview} to {new_key_preview} - resetting agent clients")
             self.architect_client = None
             self.developer_client = None
             self.tester_client = None
@@ -76,7 +78,7 @@ class RemoteAgentConnection:
             headers["Authorization"] = f"Bearer {resolved_api_key}"
             self.logger.log_activity(f"API key loaded (length: {len(resolved_api_key)})")
         else:
-            self.logger.log_error("API key not found in request or environment variables (API_KEY)", ValueError("API_KEY missing"))
+            self.logger.log_error("API key not found in request or environment variables (AGENTGUARD_API_KEY or API_KEY)", ValueError("API_KEY missing"))
         
         # Store old client reference before creating new one
         old_client = self._httpx_client
@@ -88,9 +90,11 @@ class RemoteAgentConnection:
             headers=headers
         )
         self._current_api_key = resolved_api_key  # Track the API key we used
-        # Store the resolved API key for future use if not already stored
-        if resolved_api_key and not self._stored_api_key:
+        
+        # ALWAYS update stored API key when a new one is provided or resolved
+        if resolved_api_key:
             self._stored_api_key = resolved_api_key
+            self.logger.log_activity(f"Updated stored API key (length: {len(resolved_api_key)})")
         
         # Close old client asynchronously after a delay to allow any in-flight requests to complete
         # This prevents "client has been closed" errors
@@ -147,13 +151,24 @@ class RemoteAgentConnection:
                        If provided, these URLs will be used instead of environment variables.
             api_key: Optional API key from UI request. If not provided, falls back to stored key or environment variable.
         """
-        # Store the API key for later use when recreating clients
+        # ALWAYS update stored API key if a new one is provided
         if api_key:
+            api_key_changed = (self._stored_api_key is not None and self._stored_api_key != api_key)
             self._stored_api_key = api_key
-            self.logger.log_activity(f"Storing API key for future use (length: {len(api_key)})")
+            if api_key_changed:
+                self.logger.log_activity(f"API key changed - updating stored key and will reconnect agents")
+                # Reset agent clients to force reconnection with new API key
+                self.architect_client = None
+                self.developer_client = None
+                self.tester_client = None
+                self.architect_card = None
+                self.developer_card = None
+                self.tester_card = None
+            else:
+                self.logger.log_activity(f"Storing API key for future use (length: {len(api_key)})")
         elif not self._stored_api_key:
             # Only fallback to env if we don't have a stored key
-            self._stored_api_key = os.getenv("API_KEY")
+            self._stored_api_key = os.getenv("AGENTGUARD_API_KEY") or os.getenv("API_KEY")
             if self._stored_api_key:
                 self.logger.log_activity(f"Using API key from environment (length: {len(self._stored_api_key)})")
         

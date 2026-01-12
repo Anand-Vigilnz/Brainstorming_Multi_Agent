@@ -73,12 +73,20 @@ class Orchestrator:
         # Convert agent_urls to a comparable format (remove None values for comparison)
         normalized_urls = {k: v for k, v in (agent_urls or {}).items() if v} if agent_urls else None
         
-        # Only reconnect if:
-        # 1. Not yet connected, OR
-        # 2. URLs are provided AND different from what we used before
+        # Check if API key changed
+        current_stored_key = getattr(self.remote_connection, '_stored_api_key', None)
+        api_key_changed = (api_key is not None and 
+                          current_stored_key is not None and 
+                          api_key != current_stored_key)
+        
+        # Determine if we should reconnect
         should_reconnect = False
         if not self._agents_connected:
             should_reconnect = True
+        elif api_key_changed:
+            # API key changed - force reconnection
+            should_reconnect = True
+            self.logger.log_activity("API key changed - forcing reconnection of all agents")
         elif normalized_urls:
             # Compare with stored URLs
             if self._last_agent_urls is None or normalized_urls != self._last_agent_urls:
@@ -87,15 +95,19 @@ class Orchestrator:
         if should_reconnect:
             if normalized_urls:
                 self.logger.log_activity("Connecting/reconnecting to remote agents with provided URLs")
+            elif api_key_changed:
+                self.logger.log_activity("Reconnecting to remote agents due to API key change")
             else:
                 self.logger.log_activity("Connecting to remote agents (lazy initialization)")
+            
             await self.remote_connection.discover_all_agents(agent_urls=agent_urls, api_key=api_key)
             self._agents_connected = True
             # Store the URLs we used (normalized to avoid reconnecting when URLs are the same)
             self._last_agent_urls = normalized_urls
         else:
-            # URLs are same as before, reuse existing connections
-            self.logger.log_activity("Reusing existing agent connections (URLs unchanged)")
+            # URLs and API key are same as before, reuse existing connections
+            # But ensure API key is still available in stored key
+            self.logger.log_activity("Reusing existing agent connections (URLs and API key unchanged)")
     
     async def process_development_request(self, user_request: str, agent_urls: Dict[str, str] = None, api_key: str = None) -> Dict[str, Any]:
         """
