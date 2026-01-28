@@ -75,7 +75,7 @@ async def health():
     return {"status": "healthy", "service": "host-agent"}
 
 # REST API endpoints for UI communication
-@app.post("/api/develop")
+@app.post("/send/task")
 async def create_development_task(request: Dict[str, Any]):
     """Create a new development task and return task_id."""
     user_request = request.get("user_request") or request.get("project_idea") or request.get("topic", "").strip()
@@ -110,7 +110,7 @@ async def create_development_task(request: Dict[str, Any]):
     })
 
 
-@app.get("/api/develop/{task_id}")
+@app.get("/send/task/{task_id}")
 async def get_development_task(task_id: str):
     """Get the status and result of a development task."""
     if task_id not in rest_task_storage:

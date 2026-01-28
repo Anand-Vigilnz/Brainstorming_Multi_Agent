@@ -87,7 +87,7 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                 
                 # Step 1: Create task by sending POST request
                 create_response = await http_client.post(
-                    f"{host_agent_url}/api/develop",
+                    f"{host_agent_url}/send/task",
                     json=payload,
                     headers=headers
                 )
@@ -107,7 +107,7 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                     
                     # Get task status
                     status_response = await http_client.get(
-                        f"{host_agent_url}/api/develop/{task_id}",
+                        f"{host_agent_url}/send/task/{task_id}",
                         headers=headers
                     )
                     status_response.raise_for_status()
@@ -358,6 +358,17 @@ def main():
         )
         
         st.divider()
+        st.markdown("### Example Project Requests")
+        st.markdown("""
+        - Build a simple calculator application
+        - Create a todo list web app
+        - Develop a weather dashboard
+        - Build a chat application
+        - Create a file manager application
+        """)
+
+
+        st.divider()
         st.markdown("### About")
         st.markdown("""
         This system uses multiple AI agents:
@@ -395,15 +406,6 @@ def main():
         # Display results
         display_results(result)
     
-    # Display example
-    with st.expander("💡 Example Project Requests"):
-        st.markdown("""
-        - Build a simple calculator application
-        - Create a todo list web app
-        - Develop a weather dashboard
-        - Build a chat application
-        - Create a file manager application
-        """)
 
 
 if __name__ == "__main__":
