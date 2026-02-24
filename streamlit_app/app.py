@@ -99,8 +99,8 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
                     return {"status": "error", "message": "No task_id received from host agent"}
                 
                 # Step 2: Poll for task completion
-                max_polls = 120  # Poll for up to 2 minutes (120 * 1 second)
-                poll_interval = 10  # Poll every 5 second
+                max_polls = 120  # Poll for up to 20 minutes (120 * 10 seconds)
+                poll_interval = 10  # Poll every 10 seconds
                 
                 for poll_count in range(max_polls):
                     await asyncio.sleep(poll_interval)
@@ -143,14 +143,8 @@ def send_development_request(user_request: str, host_agent_url: str, architect_a
             traceback.print_exc()
             return {"status": "error", "message": f"Error: {str(e)}"}
     
-    # Run async function in sync context
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(_send_request())
+    # Run async function in sync context (Python 3.10+ compatible)
+    return asyncio.run(_send_request())
 
 
 def display_results(result: Dict[str, Any]):

@@ -83,7 +83,7 @@ class HostAgentExecutor(AgentExecutor):
             print(f"[HostAgent] Extracted task_input: {task_input}")
             self.logger.log_activity(f"Extracted task_input: {task_input}")
             
-            user_request = task_input.get("user_request") or task_input.get("project_idea") or task_input.get("topic", "") if isinstance(task_input, dict) else ""
+            user_request = (task_input.get("user_request") or task_input.get("project_idea") or task_input.get("topic", "")) if isinstance(task_input, dict) else ""
             print(f"[HostAgent] Extracted user_request: '{user_request}'")
             self.logger.log_activity(f"Extracted user_request: '{user_request}'")
             

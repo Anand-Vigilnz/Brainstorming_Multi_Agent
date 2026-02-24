@@ -18,7 +18,7 @@ class DeveloperAgent:
             print("Warning: OPENAI_API_KEY not found")
         # Use gpt-4o-mini for code generation
         self.llm = ChatOpenAI(
-            openai_api_key=self.api_key,
+            api_key=self.api_key,
             model="gpt-4o-mini",
             temperature=0.3
         )
@@ -155,7 +155,7 @@ class DeveloperAgent:
                 error_str = str(e)
                 if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
                     if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
+                        wait_time = 5 * (2 ** attempt)  # 5s, 10s, 20s
                         print(f"Rate limit hit, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
                         await asyncio.sleep(wait_time)
                         continue

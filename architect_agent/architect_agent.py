@@ -18,7 +18,7 @@ class ArchitectAgent:
             print("Warning: OPENAI_API_KEY not found")
         # Use gpt-4o-mini for architectural planning
         self.llm = ChatOpenAI(
-            openai_api_key=self.api_key,
+            api_key=self.api_key,
             model="gpt-4o-mini",
             temperature=0.5
         )

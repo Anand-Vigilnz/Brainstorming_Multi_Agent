@@ -1,6 +1,7 @@
 from typing import Dict, Any
 import os
 import json
+import re
 import asyncio
 from pathlib import Path
 from langchain_openai import ChatOpenAI
@@ -17,7 +18,7 @@ class TesterAgent:
             print("Warning: OPENAI_API_KEY not found")
         # Use gpt-4o-mini for testing
         self.llm = ChatOpenAI(
-            openai_api_key=self.api_key,
+            api_key=self.api_key,
             model="gpt-4o-mini",
             temperature=0.2
         )
@@ -64,7 +65,6 @@ class TesterAgent:
                     return {"test_results": test_result}
                 except json.JSONDecodeError:
                     # If JSON parsing fails, try to extract JSON from the response
-                    import re
                     json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
                     if json_match:
                         test_result = json.loads(json_match.group())
@@ -85,7 +85,7 @@ class TesterAgent:
                 error_str = str(e)
                 if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
                     if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
+                        wait_time = 5 * (2 ** attempt)  # 5s, 10s, 20s
                         print(f"Rate limit hit, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
                         await asyncio.sleep(wait_time)
                         continue

@@ -2,6 +2,7 @@ from typing import Any, Dict, List
 import asyncio
 import json
 import os
+import time
 from uuid import uuid4
 import httpx
 from pathlib import Path
@@ -297,9 +298,8 @@ class RemoteAgentConnection:
 
                 # 2. Poll for completion if not already completed
                 if not final_task:
-                    import time
-                    end_time = 300
-                    
+                    end_time = time.time() + 300  # poll for up to 300 seconds from now
+
                     while time.time() < end_time:
                         await asyncio.sleep(5)  # Reduced to 1 second for faster response
                         
